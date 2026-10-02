@@ -40,35 +40,36 @@ function Add-ToPath([string]$dir) {
     if (-not (Test-InPath $dir)) {
         $env:PATH = "$env:PATH;$dir"
     }
-    $reg = [Environment]::GetEnvironmentVariable("Path", "User")
+    $reg     = [Environment]::GetEnvironmentVariable("Path", "User")
     $regWant = $dir.TrimEnd('\').ToLowerInvariant()
-    $alreadyReg = ($reg -split ';') | Where-Object {
+    $already = ($reg -split ';') | Where-Object {
         $_.Trim().TrimEnd('\').ToLowerInvariant() -eq $regWant
     }
-    if (-not $alreadyReg) {
+    if (-not $already) {
         $newReg = if ($reg) { "$reg;$dir" } else { $dir }
         [Environment]::SetEnvironmentVariable("Path", $newReg, "User")
     }
 }
 
-# Download $url to $dest using WebClient (faster than Invoke-WebRequest, no
-# hanging progress bar).  Shows a simple dots heartbeat so users know it's running.
+# Download $url to $dest via WebClient async so the thread stays live for
+# the heartbeat loop (Invoke-WebRequest blocks and can stall the pipeline).
 function Download-File([string]$url, [string]$dest) {
     $wc   = New-Object System.Net.WebClient
-    $task = $wc.DownloadFileTaskAsync($url, $dest)
+    $task = $wc.DownloadFileTaskAsync([uri]$url, $dest)
 
-    # Heartbeat — print a dot every 2 s so users know it's running
     Write-Host -NoNewline "    downloading"
     while (-not $task.IsCompleted) {
         Start-Sleep -Milliseconds 2000
         Write-Host -NoNewline "."
     }
     Write-Host " done"
-
     $wc.Dispose()
 
     if ($task.IsFaulted) {
-        throw $task.Exception.InnerException
+        # Unwrap AggregateException to get a readable message
+        $inner = $task.Exception
+        while ($inner.InnerException) { $inner = $inner.InnerException }
+        throw $inner
     }
 }
 
@@ -80,26 +81,28 @@ function Ensure-Go {
     Write-Step "Checking for Go..."
 
     # Already on PATH?
-    if (Get-Command go -ErrorAction SilentlyContinue) {
-        Write-Ok "found $(go version)"
+    $goCmd = Get-Command go -ErrorAction SilentlyContinue
+    if ($goCmd) {
+        $goVer = (& $goCmd.Source version) 2>&1 | Out-String
+        Write-Ok "found $($goVer.Trim())"
         return
     }
 
     # Check well-known locations that might exist but aren't on PATH yet
-    $knownLocations = @(
+    $knownDirs = [System.Collections.Generic.List[string]]@(
         "$env:ProgramFiles\Go\bin",
         "$env:LOCALAPPDATA\Programs\go\bin",
         "$env:USERPROFILE\sdk\go\bin",
         "$env:USERPROFILE\go\bin"
     )
-    # ProgramFiles(x86) can be $null on 64-bit-only systems
     $pf86 = [System.Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
-    if ($pf86) { $knownLocations += "$pf86\Go\bin" }
+    if ($pf86) { $knownDirs.Add("$pf86\Go\bin") }
 
-    foreach ($loc in $knownLocations) {
-        if ($loc -and (Test-Path "$loc\go.exe")) {
+    foreach ($loc in $knownDirs) {
+        if ($loc -and (Test-Path (Join-Path $loc "go.exe"))) {
             $env:PATH = "$loc;$env:PATH"
-            Write-Ok "found existing Go at $loc"
+            $goVer = (& (Join-Path $loc "go.exe") version) 2>&1 | Out-String
+            Write-Ok "found existing Go at $loc ($($goVer.Trim()))"
             return
         }
     }
@@ -108,17 +111,18 @@ function Ensure-Go {
     Write-Host "    Go not found. Downloading the official portable Go archive from go.dev..."
 
     $arch = "amd64"
-    if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or
-        $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
+    if ($env:PROCESSOR_ARCHITECTURE    -eq "ARM64" -or
+        $env:PROCESSOR_ARCHITEW6432    -eq "ARM64") {
         $arch = "arm64"
     } elseif (-not [System.Environment]::Is64BitOperatingSystem) {
         $arch = "386"
     }
 
-    # Query latest stable release
+    # Query latest stable release (Invoke-RestMethod returns parsed objects;
+    # -UseBasicParsing is only valid on Invoke-WebRequest, omit it here)
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Write-Host -NoNewline "    fetching release list from go.dev..."
-    $releases = Invoke-RestMethod -Uri "https://go.dev/dl/?mode=json" -UseBasicParsing
+    $releases = Invoke-RestMethod -Uri "https://go.dev/dl/?mode=json"
     Write-Host " done"
 
     $fileObj = $null
@@ -136,24 +140,21 @@ function Ensure-Go {
     # Hard fallback if API changes
     $filename = if ($fileObj) { $fileObj.filename } else { "go1.27.1.windows-$arch.zip" }
     $dlUrl    = "https://go.dev/dl/$filename"
+    $zipPath  = Join-Path $env:TEMP ("go-$([System.Guid]::NewGuid().ToString('N')).zip")
 
-    $zipPath = Join-Path $env:TEMP ("go-$([System.Guid]::NewGuid().ToString('N')).zip")
+    # go.dev/dl zips always contain a top-level "go\" folder.
+    # Extract into Programs\ so the result is Programs\go\bin\go.exe.
+    $destParent = Join-Path $env:LOCALAPPDATA "Programs"
+    $destFolder = Join-Path $destParent "go"
+
+    Write-Host "    target : $destFolder"
+    Write-Host "    url    : $dlUrl"
 
     try {
-        # go.dev/dl zips always extract to a subfolder called "go" inside the
-        # chosen destination parent.  We put the parent at Programs\ and end up
-        # with Programs\go\bin\go.exe — which we expose as $destFolder.
-        $destParent = Join-Path $env:LOCALAPPDATA "Programs"
-        $destFolder = Join-Path $destParent "go"        # = …\Programs\go
-
-        Write-Host "    target: $destFolder"
-        Write-Host "    url:    $dlUrl"
-
         Download-File $dlUrl $zipPath
 
         Write-Step "Extracting Go..."
 
-        # Remove stale install if present
         if (Test-Path $destFolder) {
             Remove-Item -Path $destFolder -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -166,17 +167,19 @@ function Ensure-Go {
         Expand-Archive -Path $zipPath -DestinationPath $destParent -Force
         $ProgressPreference = $oldPP
 
-        $goBin = Join-Path $destFolder "bin"
-        if (-not (Test-Path (Join-Path $goBin "go.exe"))) {
-            throw "Expected go.exe at $goBin\go.exe after extraction — please report this."
+        $goBin  = Join-Path $destFolder "bin"
+        $goExe  = Join-Path $goBin "go.exe"
+        if (-not (Test-Path $goExe)) {
+            throw "go.exe not found at $goExe after extraction. The zip layout may have changed; please report this."
         }
 
-        $env:PATH    = "$goBin;$env:PATH"
-        $env:GOROOT  = $destFolder
+        $env:GOROOT = $destFolder
+        $env:PATH   = "$goBin;$env:PATH"
         Add-ToPath $goBin
 
+        $goVer = (& $goExe version) 2>&1 | Out-String
         Write-Ok "Go installed at $destFolder"
-        Write-Ok "$(go version)"
+        Write-Ok $goVer.Trim()
     } finally {
         if (Test-Path $zipPath) {
             Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
@@ -195,13 +198,15 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host "NOTE: Git not found. File/text transfer works fine; 'drop diff'/'drop git' require Git."
 }
 
-# Determine version string
+# Determine version string from git tag if possible
 if (-not $Version) {
     if (Get-Command git -ErrorAction SilentlyContinue) {
         try {
-            $g = (& git describe --tags --always --dirty 2>&1) | Out-String
-            if ($LASTEXITCODE -eq 0 -and $g -and ($g -notmatch "fatal|error")) {
-                $Version = $g.Trim()
+            # Collect all output (stdout + stderr) as a single string, then
+            # discard if git printed an error message.
+            $raw = (& git describe --tags --always --dirty 2>&1) | Out-String
+            if ($LASTEXITCODE -eq 0 -and $raw -and ($raw -notmatch "(?i)fatal|error")) {
+                $Version = $raw.Trim()
             }
         } catch { }
     }
@@ -210,20 +215,22 @@ if (-not $Version) {
 
 Write-Step "Building drop $Version..."
 
-$ldflags = "-X github.com/thameem/drop/internal/cli.Version=$Version"
+# Pass -ldflags as an array element so PowerShell does NOT word-split the
+# value — the space in "-X pkg.Var=value" must stay as one argument.
+$ldflagValue = "-X github.com/thameem/drop/internal/cli.Version=$Version"
 
 # ---------------------------------------------------------------------------
 # Choose install directory
 # ---------------------------------------------------------------------------
-$targetDir  = $BinDir
+$targetDir   = $BinDir
 $addedToPath = $false
 
 if (-not $targetDir) {
-    $candidates = @()
-    if ($env:GOPATH) { $candidates += Join-Path $env:GOPATH "bin" }
-    $candidates += Join-Path $env:USERPROFILE "go\bin"
-    $candidates += Join-Path $env:USERPROFILE ".local\bin"
-    $candidates += Join-Path $env:USERPROFILE "bin"
+    $candidates = [System.Collections.Generic.List[string]]@()
+    if ($env:GOPATH) { $candidates.Add((Join-Path $env:GOPATH "bin")) }
+    $candidates.Add((Join-Path $env:USERPROFILE "go\bin"))
+    $candidates.Add((Join-Path $env:USERPROFILE ".local\bin"))
+    $candidates.Add((Join-Path $env:USERPROFILE "bin"))
 
     foreach ($cand in $candidates) {
         if ((Test-Path $cand) -and (Test-InPath $cand)) {
@@ -254,7 +261,9 @@ $tempFile  = Join-Path $targetDir ".drop-install-$guid.exe"
 $finalFile = Join-Path $targetDir "drop.exe"
 
 try {
-    & go build -ldflags "$ldflags" -o "$tempFile" ./cmd/drop
+    # Use the call operator with an explicit array so each token is one arg.
+    # Do NOT wrap $ldflagValue in quotes here — & handles it correctly as-is.
+    & go build -ldflags $ldflagValue -o $tempFile ./cmd/drop
     if ($LASTEXITCODE -ne 0) {
         throw "go build exited with code $LASTEXITCODE"
     }
@@ -272,8 +281,8 @@ if ($addedToPath) {
     Write-Host "  Added $targetDir to your User PATH."
     Write-Host "  Open a NEW terminal window, then run:  drop --version"
 } else {
-    # Verify immediately — drop is already on PATH in this session
     try {
-        Write-Ok "$(& $finalFile --version)"
+        $ver = (& $finalFile --version) 2>&1 | Out-String
+        Write-Ok $ver.Trim()
     } catch { }
 }

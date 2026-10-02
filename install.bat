@@ -1,10 +1,20 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
+
 cd /d "%~dp0"
+
 powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\install.ps1" %*
-if %ERRORLEVEL% neq 0 (
+set _ERR=!ERRORLEVEL!
+
+if !_ERR! neq 0 (
     echo.
-    echo Installation failed. See errors above.
+    echo Installation failed with exit code !_ERR!. See errors above.
+    endlocal
     pause
-    exit /b %ERRORLEVEL%
+    exit /b !_ERR!
 )
+
+echo.
+echo Installation successful. Open a new terminal and run: drop --version
+endlocal
+pause
