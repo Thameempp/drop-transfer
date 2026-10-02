@@ -57,6 +57,8 @@ type Decision struct {
 	// Trust asks the receiver to remember the sender as a trusted device after
 	// this transfer verifies. Only honoured for PIN-authorized senders.
 	Trust bool
+	// Dir overrides Receiver.Dir for this transfer only. Empty means Receiver.Dir.
+	Dir string
 }
 
 // Approver decides whether to accept an incoming transfer. It may block on user input.
@@ -297,7 +299,7 @@ func (r *Receiver) handle(ctx context.Context, conn transport.Conn) (rec *Receiv
 	}
 
 	if ttype == security.TransferFolder {
-		rec, tree, err := r.receiveFolder(conn, incoming, req)
+		rec, tree, err := r.receiveFolder(conn, incoming, req, destDir(r.Dir, dec))
 		if err != nil {
 			_ = protocol.WriteMsg(conn, &protocol.TransferResult{OK: false, Error: publicMessage(err)})
 			if errors.Is(err, ErrVerification) || errors.Is(err, errManifest) {
@@ -312,7 +314,7 @@ func (r *Receiver) handle(ctx context.Context, conn transport.Conn) (rec *Receiv
 		return rec, nil
 	}
 
-	rec, err = r.receiveFile(conn, incoming, req.SHA256, dec.Conflict)
+	rec, err = r.receiveFile(conn, incoming, req.SHA256, dec.Conflict, destDir(r.Dir, dec))
 	if err != nil {
 		_ = protocol.WriteMsg(conn, &protocol.TransferResult{OK: false, Error: publicMessage(err)})
 		if errors.Is(err, ErrVerification) {
@@ -402,7 +404,7 @@ var errManifest = errors.New("manifest rejected")
 // receiveFolder reads and fully validates the manifest BEFORE creating
 // anything, then writes into a private staging directory and renames it into
 // place only after every file and the whole-tree hash verified.
-func (r *Receiver) receiveFolder(conn transport.Conn, in Incoming, req *protocol.TransferRequest) (*Received, string, error) {
+func (r *Receiver) receiveFolder(conn transport.Conn, in Incoming, req *protocol.TransferRequest, dir string) (*Received, string, error) {
 	reject := func(msg string) (*Received, string, error) {
 		_ = protocol.WriteMsg(conn, &protocol.ManifestAck{OK: false, Error: msg})
 		return nil, "", fmt.Errorf("%w: %s", errManifest, msg)
@@ -425,12 +427,12 @@ func (r *Receiver) receiveFolder(conn transport.Conn, in Incoming, req *protocol
 		return nil, "", err
 	}
 
-	if err := os.MkdirAll(r.Dir, 0o755); err != nil {
-		return nil, "", fmt.Errorf("create destination %s: %w", r.Dir, err)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, "", fmt.Errorf("create destination %s: %w", dir, err)
 	}
-	staging, err := os.MkdirTemp(r.Dir, ".drop-partial-dir-*")
+	staging, err := os.MkdirTemp(dir, ".drop-partial-dir-*")
 	if err != nil {
-		return nil, "", fmt.Errorf("create staging folder in %s: %w", r.Dir, err)
+		return nil, "", fmt.Errorf("create staging folder in %s: %w", dir, err)
 	}
 	ok := false
 	defer func() {
@@ -462,7 +464,7 @@ func (r *Receiver) receiveFolder(conn transport.Conn, in Incoming, req *protocol
 		tree.file(e.Path, e.Size, sum)
 	}
 
-	final, err := filesystem.RenameUnique(staging, r.Dir, in.Name)
+	final, err := filesystem.RenameUnique(staging, dir, in.Name)
 	if err != nil {
 		return nil, "", err
 	}
@@ -527,15 +529,15 @@ func (r *Receiver) logf(format string, args ...any) {
 	}
 }
 
-func (r *Receiver) receiveFile(conn transport.Conn, in Incoming, wantHash string, conflict Conflict) (*Received, error) {
-	if err := os.MkdirAll(r.Dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create destination %s: %w", r.Dir, err)
+func (r *Receiver) receiveFile(conn transport.Conn, in Incoming, wantHash string, conflict Conflict, dir string) (*Received, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create destination %s: %w", dir, err)
 	}
 	// Data goes to a hidden temp file in the destination dir (same filesystem,
 	// so the final rename is atomic) and is only given its real name once verified.
-	tmp, err := os.CreateTemp(r.Dir, ".drop-partial-*")
+	tmp, err := os.CreateTemp(dir, ".drop-partial-*")
 	if err != nil {
-		return nil, fmt.Errorf("create temp file in %s: %w", r.Dir, err)
+		return nil, fmt.Errorf("create temp file in %s: %w", dir, err)
 	}
 	tmpPath := tmp.Name()
 	cleanup := func() { tmp.Close(); os.Remove(tmpPath) }
@@ -570,9 +572,9 @@ func (r *Receiver) receiveFile(conn transport.Conn, in Incoming, wantHash string
 	var final string
 	switch conflict {
 	case ConflictReplace:
-		final = filepath.Join(r.Dir, in.Name)
+		final = filepath.Join(dir, in.Name)
 	default:
-		final, err = filesystem.ReserveUnique(r.Dir, in.Name)
+		final, err = filesystem.ReserveUnique(dir, in.Name)
 		if err != nil {
 			os.Remove(tmpPath)
 			return nil, err
@@ -606,4 +608,12 @@ func publicMessage(err error) string {
 		return "unsafe file name"
 	}
 	return "receiver error"
+}
+
+// destDir is the directory a transfer is written to: the approver's choice, if any.
+func destDir(def string, dec Decision) string {
+	if dec.Dir != "" {
+		return dec.Dir
+	}
+	return def
 }

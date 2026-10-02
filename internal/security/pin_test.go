@@ -51,7 +51,7 @@ func TestVerifierHashingAndChecking(t *testing.T) {
 	}
 }
 
-func TestPINStoreNeverContainsPlaintextAndIs0600(t *testing.T) {
+func TestPINStoreVerifierNeverContainsPlaintextAndIs0600(t *testing.T) {
 	dir := t.TempDir()
 	s := OpenPINStore(dir)
 	if _, err := s.Load(); err != ErrNoPIN {
@@ -180,5 +180,34 @@ func TestProductionKDFParameters(t *testing.T) {
 	}
 	if d := time.Since(start); d > 5*time.Second {
 		t.Fatalf("verification takes %v: too slow for interactive use", d)
+	}
+}
+
+func TestRevealPIN(t *testing.T) {
+	dir := t.TempDir()
+	s := OpenPINStore(dir)
+	if _, err := s.Reveal(); err != ErrNoPIN {
+		t.Fatalf("got %v", err)
+	}
+	if err := s.Set("482917"); err != nil {
+		t.Fatal(err)
+	}
+	if pin, err := s.Reveal(); err != nil || pin != "482917" {
+		t.Fatalf("got %q %v", pin, err)
+	}
+	if runtime.GOOS != "windows" {
+		if st, _ := os.Stat(filepath.Join(dir, "pin.txt")); st.Mode().Perm() != 0o600 {
+			t.Fatalf("mode %v", st.Mode().Perm())
+		}
+	}
+	// A PIN set without a copy (older versions) or a stale copy is not revealed.
+	v, _ := NewVerifier("111222")
+	s.Save(v)
+	if _, err := s.Reveal(); err != ErrPINNotRecoverable {
+		t.Fatalf("stale copy: got %v", err)
+	}
+	os.Remove(filepath.Join(dir, "pin.txt"))
+	if _, err := s.Reveal(); err != ErrPINNotRecoverable {
+		t.Fatalf("no copy: got %v", err)
 	}
 }

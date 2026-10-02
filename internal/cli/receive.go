@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/thameem/drop/internal/config"
 	"github.com/thameem/drop/internal/discovery"
 	"github.com/thameem/drop/internal/protocol"
 	"github.com/thameem/drop/internal/security"
@@ -50,7 +51,7 @@ func newReceiveCmd(verbose *bool) *cobra.Command {
 			return a.runReceive(cmd.Context(), dir, port, yes, once, newPIN)
 		},
 	}
-	cmd.Flags().StringVar(&dir, "dir", "", "destination directory (default ~/Downloads)")
+	cmd.Flags().StringVar(&dir, "dir", "", "destination directory (default: current directory)")
 	cmd.Flags().IntVar(&port, "port", 0, "TCP port to listen on (default: random free port)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "accept incoming transfers without asking")
 	cmd.Flags().BoolVar(&newPIN, "new-pin", false, "generate and show a new Drop PIN (the old one stops working)")
@@ -180,7 +181,10 @@ func (a *app) runReceive(ctx context.Context, dir string, port int, yes, once, n
 // has already happened by the time this is called; this is the consent step.
 // Existing files are never replaced without an explicit choice.
 func approve(in *bufio.Reader, dir string, yes bool, inc transfer.Incoming) transfer.Decision {
-	if yes {
+	origDir := dir
+	// Text is shown live, with no prompt: it is never written to disk, and on a
+	// terminal control characters are stripped before it is printed.
+	if yes || inc.Type == security.TransferText {
 		return transfer.Decision{Accept: true, Conflict: transfer.ConflictRename}
 	}
 	authLine := "✓ Authorized (Drop PIN)"
@@ -192,17 +196,31 @@ func approve(in *bufio.Reader, dir string, yes bool, inc transfer.Incoming) tran
 	}
 	what := "File: " + inc.Name
 	switch inc.Type {
-	case security.TransferText:
-		what = "Text"
 	case security.TransferFolder:
-		what = fmt.Sprintf("Folder: %s (%s in %s)\n  Destination: %s", inc.Name, plural(inc.Files, "file", "files"), plural(inc.Dirs, "subfolder", "subfolders"), filepath.Join(dir, inc.Name))
+		what = fmt.Sprintf("Folder: %s (%s in %s)", inc.Name, plural(inc.Files, "file", "files"), plural(inc.Dirs, "subfolder", "subfolders"))
 	}
-	fmt.Fprintf(os.Stderr, "\nIncoming transfer\n\n  From: %s (%s)\n  %s\n  Size: %s\n  Authentication: %s\n\nAccept? [Y/n] ",
-		sanitizeLabel(inc.From.Name), inc.Addr, what, humanBytes(inc.Size), authLine)
-	if ans := readLine(in); ans != "" && !strings.HasPrefix(strings.ToLower(ans), "y") {
-		return transfer.Decision{Reason: "declined by user"}
+	// [d] changes the destination for this transfer only.
+	chosen := dir
+	for {
+		fmt.Fprintf(os.Stderr, "\nIncoming transfer\n\n  From: %s (%s)\n  %s\n", sanitizeLabel(inc.From.Name), inc.Addr, what)
+		fmt.Fprintf(os.Stderr, "  Save to: %s\n", chosen)
+		fmt.Fprintf(os.Stderr, "  Size: %s\n  Authentication: %s\n\n", humanBytes(inc.Size), authLine)
+		fmt.Fprint(os.Stderr, "Accept? [Y/n], or d to choose another folder: ")
+		ans := strings.ToLower(readLine(in))
+		if ans == "d" || ans == "dir" {
+			chosen = askDir(in, chosen)
+			continue
+		}
+		if ans != "" && !strings.HasPrefix(ans, "y") {
+			return transfer.Decision{Reason: "declined by user"}
+		}
+		break
 	}
+	dir = chosen
 	d := transfer.Decision{Accept: true, Conflict: transfer.ConflictRename}
+	if dir != origDir {
+		d.Dir = dir
+	}
 	// Offer trust only to a sender that just proved the PIN, never with --yes
 	// (which must not silently widen who can send here).
 	if inc.AuthMethod == "pin" {
@@ -250,7 +268,7 @@ func (a *app) ensurePIN(renew bool) error {
 	_, err := a.pins.Load()
 	if err == nil && !renew {
 		// Only a hash is stored, so the PIN cannot be shown again.
-		fmt.Fprintln(os.Stderr, "\nSenders need your Drop PIN (shown when it was created; it cannot be shown again).\nForgot it? Run `drop receive --new-pin`.")
+		fmt.Fprintln(os.Stderr, "\nSenders need your Drop PIN. Forgot it? Run `drop security show-pin` (or `drop receive --new-pin`).")
 		return nil
 	}
 	if err != nil && !errors.Is(err, security.ErrNoPIN) {
@@ -266,11 +284,87 @@ func (a *app) ensurePIN(renew bool) error {
 	if err := a.limiter.Reset(); err != nil {
 		return err
 	}
-	printPINBox("Your Drop PIN", pin, "Senders need this PIN to send files to this device.\nIt is shown only once. Change it with `drop security set-pin`.")
+	printPINBox("Your Drop PIN", pin, "Senders need this PIN to send files to this device.\nShow it again with `drop security show-pin`; change it with `set-pin`.")
 	return nil
 }
 
 func printPINBox(title, pin, note string) {
 	line := strings.Repeat("─", len(pin)+4)
 	fmt.Fprintf(os.Stderr, "\n%s\n\n┌%s┐\n│  %s  │\n└%s┘\n\n%s\n\n", title, line, pin, line, note)
+}
+
+// askDir asks for a destination folder and returns it, or current if the
+// answer is empty or unusable.
+func askDir(in *bufio.Reader, current string) string {
+	fmt.Fprintf(os.Stderr, "Save to folder (Enter to keep %s): ", current)
+	ans := readLine(in)
+	if strings.TrimSpace(ans) == "" {
+		return current
+	}
+	p, err := config.ExpandDir(ans)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+		return current
+	}
+	if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		fmt.Fprintf(os.Stderr, "✗ %s is not a folder\n", p)
+		return current
+	}
+	return p
+}
+
+func newReceiveDirCmd(verbose *bool) *cobra.Command {
+	var reset bool
+	cmd := &cobra.Command{
+		Use:   "receive-dir [folder]",
+		Short: "Show or set the default folder for received files",
+		Long: `Without arguments, shows where received files are saved.
+With a folder, makes it the default for every "drop receive". Use --reset to
+go back to saving in the folder where "drop receive" is run.
+While accepting a transfer you can still choose another folder with "d".`,
+		Example: "  drop receive-dir ~/inbox\n  drop receive-dir --reset",
+		Args:    cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			a, err := loadApp(*verbose)
+			if err != nil {
+				return err
+			}
+			switch {
+			case reset && len(args) > 0:
+				return usageErr("use either a folder or --reset")
+			case reset:
+				a.cfg.Transfer.ReceiveDir = ""
+			case len(args) == 1:
+				p, err := config.ExpandDir(args[0])
+				if err != nil {
+					return usageErr("%v", err)
+				}
+				if st, err := os.Stat(p); err == nil && !st.IsDir() {
+					return usageErr("%s is not a folder", p)
+				}
+				if err := os.MkdirAll(p, 0o755); err != nil {
+					return withCode(ExitGeneral, err)
+				}
+				a.cfg.Transfer.ReceiveDir = p
+			default:
+				if d := a.cfg.Transfer.ReceiveDir; d != "" {
+					fmt.Printf("Received files are saved to %s\n(change: drop receive-dir <folder>, reset: drop receive-dir --reset)\n", d)
+				} else {
+					fmt.Println("No default folder set: received files are saved to the folder where `drop receive` is run.\n(set one: drop receive-dir <folder>)")
+				}
+				return nil
+			}
+			if err := config.Save(a.cfgDir, a.cfg); err != nil {
+				return withCode(ExitGeneral, err)
+			}
+			if reset {
+				fmt.Println("✓ Default folder cleared. Received files go to the folder where `drop receive` is run.")
+			} else {
+				fmt.Printf("✓ Received files will be saved to %s\n", a.cfg.Transfer.ReceiveDir)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&reset, "reset", false, "clear the default folder")
+	return cmd
 }

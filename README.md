@@ -37,7 +37,9 @@ make smoke
 On the receiving machine (first run prints a one-time **Drop PIN**):
 
 ```bash
-drop receive            # asks before accepting each file; saves to ~/Downloads
+drop receive            # asks before accepting each file; saves to the current directory
+drop security show-pin   # show your Drop PIN again
+drop receive-dir ~/inbox  # make ~/inbox the default folder for received files (--reset to undo)
 ```
 
 On the sending machine:
@@ -47,7 +49,7 @@ drop main.py                      # pick a device, enter the PIN, done
 drop .                            # a project: junk and secrets are left out, and shown to you
 drop --dry-run .                  # see exactly what would be sent and excluded
 drop --to windows main.py         # skip the menu (PIN from the prompt or $DROP_PIN)
-echo "hello" | drop --text        # plain text: no PIN by default
+echo "hello" | drop --text        # plain text: no PIN by default, appears live on the receiver (no y/n)
 ```
 
 ```text
@@ -55,6 +57,8 @@ Nearby Devices            Enter Drop PIN:           ✓ Authenticated
 ❯ Windows-PC              > ******                  Sending main.py → Windows-PC
   MacBook                                           ✓ SHA-256 verified
 ```
+
+While accepting a transfer, press `d` (then Enter) to pick another folder for **that transfer only**; `y` saves to the default folder (set with `drop receive-dir`, otherwise the folder where `drop receive` was started).
 
 If a file with the same name exists, the receiver renames the new one (`main (1).py`) unless you choose Replace. An existing folder is never merged into or replaced: the new one is saved as `src (1)`. Nothing is overwritten silently.
 
@@ -194,7 +198,7 @@ Optional `config.toml` in the config dir (`os.UserConfigDir()/drop`, or `$DROP_H
 name = "my-laptop"      # default: hostname
 
 [transfer]
-receive_dir = "/home/me/inbox" # absolute path (no ~ expansion); default: ~/Downloads
+receive_dir = "/home/me/inbox" # absolute path (no ~ expansion); default: the current directory
 
 [security]
 text_requires_pin = false      # default

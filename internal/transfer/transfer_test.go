@@ -550,3 +550,22 @@ func TestLogsNeverContainPINOrFileContents(t *testing.T) {
 		}
 	}
 }
+
+func TestApproverCanRedirectOneTransfer(t *testing.T) {
+	other := t.TempDir()
+	ap := ApproverFunc(func(context.Context, Incoming) Decision {
+		return Decision{Accept: true, Conflict: ConflictRename, Dir: other}
+	})
+	h := newHarness(t, ap, security.Policy{})
+	if _, err := h.send(writeFile(t, "a.txt", []byte("hello")), testPIN); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	r := h.wait()
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if filepath.Dir(r.rec.Path) != other {
+		t.Fatalf("saved to %s, want %s", r.rec.Path, other)
+	}
+	assertEmpty(t, h.dir)
+}

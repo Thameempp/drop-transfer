@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -56,6 +57,8 @@ var (
 	ErrInvalidPIN = errors.New("a Drop PIN must be 6 to 12 digits")
 	// ErrNoPIN means no PIN has been configured on this device.
 	ErrNoPIN = errors.New("no Drop PIN is configured")
+	// ErrPINNotRecoverable: a PIN is set, but only its hash is known.
+	ErrPINNotRecoverable = errors.New("the current PIN cannot be shown")
 )
 
 // ValidatePIN checks format only.
@@ -192,13 +195,38 @@ func (s *PINStore) Save(v *Verifier) error {
 	return writeFileAtomic(s.path, data)
 }
 
-// Set derives and stores a verifier for pin.
+// Set derives and stores a verifier for pin, plus a 0600 copy of the PIN so
+// the owner can look it up again (see Reveal).
 func (s *PINStore) Set(pin string) error {
 	v, err := NewVerifier(pin)
 	if err != nil {
 		return err
 	}
-	return s.Save(v)
+	if err := s.Save(v); err != nil {
+		return err
+	}
+	return writeFileAtomic(s.revealPath(), []byte(pin+"\n"))
+}
+
+func (s *PINStore) revealPath() string { return filepath.Join(filepath.Dir(s.path), "pin.txt") }
+
+// Reveal returns the current PIN. It fails with ErrNoPIN if none is set, and
+// with ErrPINNotRecoverable if the PIN was created before copies were kept (or
+// the copy no longer matches the verifier).
+func (s *PINStore) Reveal() (string, error) {
+	v, err := s.Load()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(s.revealPath())
+	if err != nil {
+		return "", ErrPINNotRecoverable
+	}
+	pin := strings.TrimSpace(string(data))
+	if !v.Check(pin) {
+		return "", ErrPINNotRecoverable
+	}
+	return pin, nil
 }
 
 func writeFileAtomic(path string, data []byte) error {

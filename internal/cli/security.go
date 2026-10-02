@@ -65,7 +65,25 @@ connections are encrypted with TLS 1.3 regardless.`,
 				return a.listTrusted()
 			}},
 		newUntrustCmd(verbose),
-		&cobra.Command{Use: "generate-pin", Short: "Generate a random Drop PIN (shown once)", Args: cobra.NoArgs,
+		&cobra.Command{Use: "show-pin", Short: "Show the current Drop PIN", Args: cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				a, err := loadApp(*verbose)
+				if err != nil {
+					return err
+				}
+				pin, err := a.pins.Reveal()
+				switch {
+				case errors.Is(err, security.ErrNoPIN):
+					return usageErr("no Drop PIN yet: run `drop receive` (creates one) or `drop security generate-pin`")
+				case errors.Is(err, security.ErrPINNotRecoverable):
+					return usageErr("this PIN was set before it could be shown again: run `drop security generate-pin` (or set-pin) to create one you can show")
+				case err != nil:
+					return err
+				}
+				printPINBox("Your Drop PIN", pin, "Anyone with this PIN can send files to this device.")
+				return nil
+			}},
+		&cobra.Command{Use: "generate-pin", Short: "Generate a random Drop PIN", Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				a, err := loadApp(*verbose)
 				if err != nil {
@@ -90,7 +108,7 @@ func (a *app) storePIN(pin string, show bool) error {
 		return err
 	}
 	if show {
-		printPINBox("New Drop PIN", pin, "Shown only once. The old PIN no longer works.")
+		printPINBox("New Drop PIN", pin, "Show it again with `drop security show-pin`. The old PIN no longer works.")
 	} else {
 		fmt.Println("✓ Drop PIN changed. The old PIN no longer works.")
 	}
@@ -131,6 +149,7 @@ func showSecurity(verbose bool) error {
 	fmt.Printf("  Lockout:        after %d failed attempts, %ds doubling up to %ds\n", c.MaxAttempts, c.LockoutSeconds, c.LockoutMaxSeconds)
 	fmt.Println()
 	fmt.Println("  drop security set-pin       choose a PIN")
+	fmt.Println("  drop security show-pin      show the current PIN")
 	fmt.Println("  drop security generate-pin  generate a random PIN")
 	fmt.Println("  drop security trusted       list devices that may send without the PIN")
 	fmt.Println("  drop security untrust       revoke a trusted device")

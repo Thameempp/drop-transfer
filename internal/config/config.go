@@ -2,11 +2,13 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -28,7 +30,7 @@ type DeviceConfig struct {
 
 type TransferConfig struct {
 	Verify bool `toml:"verify"`
-	// ReceiveDir is where accepted files are written. Empty means ~/Downloads.
+	// ReceiveDir is where accepted files are written. Empty means the current directory.
 	ReceiveDir string `toml:"receive_dir"`
 }
 
@@ -83,14 +85,47 @@ func Load(dir string) (Config, error) {
 	return cfg, nil
 }
 
+// Save writes the config to config.toml in dir (0600).
+func Save(dir string, c Config) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(c); err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+// ExpandDir turns a user-typed directory into an absolute path: it expands a
+// leading ~ and resolves relative paths against the current directory.
+func ExpandDir(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", errors.New("empty directory")
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("locate home directory: %w", err)
+		}
+		p = filepath.Join(home, p[1:])
+	}
+	return filepath.Abs(p)
+}
+
 // ResolveReceiveDir resolves the directory for incoming files.
 func (c Config) ResolveReceiveDir() (string, error) {
 	if c.Transfer.ReceiveDir != "" {
 		return c.Transfer.ReceiveDir, nil
 	}
-	home, err := os.UserHomeDir()
+	wd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("locate home directory: %w", err)
+		return "", fmt.Errorf("locate current directory: %w", err)
 	}
-	return filepath.Join(home, "Downloads"), nil
+	return wd, nil
 }

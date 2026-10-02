@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -58,5 +59,24 @@ func TestSecurityOverride(t *testing.T) {
 	cfg, _ := Load(dir)
 	if !cfg.Security.TextRequiresPIN || cfg.Security.MaxAttempts != 5 || cfg.Security.PINLength != 6 {
 		t.Fatalf("%+v", cfg.Security)
+	}
+}
+
+func TestSaveLoadReceiveDirAndExpand(t *testing.T) {
+	dir := t.TempDir()
+	c := Default()
+	c.Transfer.ReceiveDir = "/tmp/inbox"
+	if err := Save(dir, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil || got.Transfer.ReceiveDir != "/tmp/inbox" || !got.Transfer.Verify {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if p, _ := ExpandDir("~/x"); !filepath.IsAbs(p) || strings.Contains(p, "~") {
+		t.Fatalf("got %q", p)
+	}
+	if _, err := ExpandDir("  "); err == nil {
+		t.Fatal("empty dir accepted")
 	}
 }

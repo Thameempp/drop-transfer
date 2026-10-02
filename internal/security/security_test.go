@@ -344,13 +344,14 @@ func TestSenderRejectsHostileArgonParameters(t *testing.T) {
 func TestPINNeverOnWireOrOnDisk(t *testing.T) {
 	const pin = "482917"
 	e := newEnv(t, pin)
-	// Disk: nothing under the config dir may contain the PIN.
+	// Disk: nothing under the config dir may contain the PIN, except pin.txt,
+	// the owner's copy that `drop security show-pin` reads (0600).
 	if s, r := e.attempt(t, pin); s != nil || r != nil {
 		t.Fatal(s, r)
 	}
 	e.attempt(t, "123456")
 	filepath.WalkDir(e.dir, func(p string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
+		if err == nil && !d.IsDir() && d.Name() != "pin.txt" {
 			b, _ := os.ReadFile(p)
 			if bytes.Contains(b, []byte(pin)) || bytes.Contains(b, []byte("123456")) {
 				t.Errorf("PIN found in %s", p)
