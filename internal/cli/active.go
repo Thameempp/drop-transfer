@@ -206,16 +206,18 @@ func activeMissing(st active.Settings) string {
 
 func newActiveSetupCmd(verbose *bool) *cobra.Command {
 	var (
-		dir     string
-		devices []string
-		network string
+		dir       string
+		devices   []string
+		network   string
+		noService bool
 	)
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Set everything up in one go and turn active sharing on",
 		Long: `Sets the folder, allows the trusted devices you name, saves the network you are
-on right now under the given name, and turns active sharing on. Run it while
-connected to the network you want to allow.`,
+on right now under the given name, turns active sharing on and installs the
+background receiver, so this computer receives with no "drop receive" running.
+Run it while connected to the network you want to allow.`,
 		Example: `  drop active setup --dir ~/Shared --device "Work PC" --device Phone --network Home`,
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -249,7 +251,16 @@ connected to the network you want to allow.`,
 				for _, d := range picked {
 					fmt.Printf(" %s", a.label(d.ID, d.Name))
 				}
-				fmt.Println("\nKeep `drop receive` running to receive.")
+				fmt.Println()
+				if noService {
+					fmt.Println("Background receiver not installed: keep `drop receive` running, or run `drop active service install`.")
+					return nil
+				}
+				if err := installBackgroundService(a); err != nil {
+					fmt.Printf("Could not start the background receiver (%v).\nKeep `drop receive` running, or fix that and run `drop active service install`.\n", err)
+					return nil
+				}
+				fmt.Println("✓ Background receiver installed: it starts at every login, so nobody needs to run `drop receive` here.")
 				return nil
 			})
 		},
@@ -257,6 +268,7 @@ connected to the network you want to allow.`,
 	cmd.Flags().StringVar(&dir, "dir", "", "folder to save into")
 	cmd.Flags().StringArrayVar(&devices, "device", nil, "trusted device to allow (repeatable)")
 	cmd.Flags().StringVar(&network, "network", "", "name to save the current network under")
+	cmd.Flags().BoolVar(&noService, "no-service", false, "do not install the background receiver (then `drop receive` must be running)")
 	return cmd
 }
 

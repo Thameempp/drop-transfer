@@ -27,7 +27,7 @@ drop active network remove Office
 
 A network is recognised by its **router**, not the Wi-Fi name (systems hide the name from programs, and it is easy to copy), so the same router works over Wi-Fi or Ethernet. Auto-accepted files are saved with the normal rename-on-conflict rule, never overwriting.
 
-**So the other person never has to run `drop receive`:** on the receiving computer, after `drop active setup`, run
+**So the other person never has to run `drop receive`:** `drop active setup` already installs a small background receiver on that computer (skip it with `--no-service`). To manage it yourself:
 
 ```bash
 drop active service install   # starts a small background receiver at every login (macOS, Linux, Windows)

@@ -167,14 +167,7 @@ cannot receive.`,
 					}
 					return usageErr("set active sharing up first: %s", m)
 				}
-				exe, err := os.Executable()
-				if err != nil {
-					return err
-				}
-				if r, err := filepath.EvalSymlinks(exe); err == nil {
-					exe = r
-				}
-				if err := installService(exe, filepath.Join(a.cfgDir, serviceLogName)); err != nil {
+				if err := installBackgroundService(a); err != nil {
 					return withCode(ExitGeneral, err)
 				}
 				fmt.Printf("✓ Background receiver installed and started. It now runs at every login.\n  Log: %s\n", filepath.Join(a.cfgDir, serviceLogName))
@@ -208,6 +201,18 @@ cannot receive.`,
 			}},
 	)
 	return cmd
+}
+
+// installBackgroundService registers `drop active serve` to start at login.
+func installBackgroundService(a *app) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if r, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = r
+	}
+	return installService(exe, filepath.Join(a.cfgDir, serviceLogName))
 }
 
 func serviceControl(what string) error {
