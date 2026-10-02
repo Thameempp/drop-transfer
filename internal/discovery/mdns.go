@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grandcat/zeroconf"
@@ -26,11 +27,21 @@ func (MDNS) Advertise(svc Service) (func(), error) {
 		"v=" + strings.Join(vers, ","),
 	}
 	// The instance name must be unique on the LAN; the device ID is.
-	srv, err := zeroconf.Register(svc.ID, ServiceType, "local.", svc.Port, txt, nil)
-	if err != nil {
-		return nil, fmt.Errorf("advertise via mDNS: %w", err)
+	srv, mdnsErr := zeroconf.Register(svc.ID, ServiceType, "local.", svc.Port, txt, nil)
+	// The unicast responder is independent of multicast, so it keeps the device
+	// discoverable on networks where mDNS does not cross between clients.
+	stopBeacon, beaconErr := serveBeacon(svc, BeaconPort)
+	if mdnsErr != nil && beaconErr != nil {
+		return nil, fmt.Errorf("advertise via mDNS: %w", mdnsErr)
 	}
-	return srv.Shutdown, nil
+	return func() {
+		if srv != nil {
+			srv.Shutdown()
+		}
+		if stopBeacon != nil {
+			stopBeacon()
+		}
+	}, nil
 }
 
 func (m MDNS) Browse(ctx context.Context, timeout time.Duration) ([]Peer, error) {
@@ -38,32 +49,58 @@ func (m MDNS) Browse(ctx context.Context, timeout time.Duration) ([]Peer, error)
 }
 
 func (MDNS) BrowseUntil(ctx context.Context, timeout time.Duration, stop func([]Peer) bool) ([]Peer, error) {
-	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		return nil, fmt.Errorf("start mDNS resolver: %w", err)
-	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	entries := make(chan *zeroconf.ServiceEntry)
-	var peers []Peer
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for e := range entries {
-			if p, ok := fromEntry(e); ok {
-				peers = append(peers, p)
-				if stop != nil && stop(dedupe(peers)) {
-					cancel() // found what we were looking for: do not wait out the timeout
+	var (
+		mu    sync.Mutex
+		peers []Peer
+	)
+	add := func(p Peer) {
+		mu.Lock()
+		defer mu.Unlock()
+		peers = append(peers, p)
+		if stop != nil && stop(dedupe(peers)) {
+			cancel() // found what we were looking for: do not wait out the timeout
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { // direct unicast queries: work where multicast is not forwarded
+		defer wg.Done()
+		beaconScan(ctx, timeout, append(subnetTargets(), "255.255.255.255"), BeaconPort, add)
+	}()
+
+	var mdnsErr error
+	if resolver, err := zeroconf.NewResolver(nil); err != nil {
+		mdnsErr = fmt.Errorf("start mDNS resolver: %w", err)
+	} else {
+		entries := make(chan *zeroconf.ServiceEntry)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for e := range entries {
+				if p, ok := fromEntry(e); ok {
+					add(p)
 				}
 			}
+		}()
+		if err := resolver.Browse(ctx, ServiceType, "local.", entries); err != nil {
+			mdnsErr = fmt.Errorf("browse mDNS: %w", err) // entries is not closed on error
+		} else {
+			<-ctx.Done()
+			<-done // Browse closes entries once ctx ends
 		}
-	}()
-	if err := resolver.Browse(ctx, ServiceType, "local.", entries); err != nil {
-		return nil, fmt.Errorf("browse mDNS: %w", err)
 	}
 	<-ctx.Done()
-	<-done // Browse closes entries once ctx ends
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(peers) == 0 && mdnsErr != nil {
+		return nil, mdnsErr
+	}
 	return dedupe(peers), nil
 }
 

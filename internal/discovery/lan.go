@@ -344,19 +344,7 @@ func nextIP(ip net.IP) net.IP {
 // what matters is that the operating system must resolve each address (ARP) to
 // send it, which populates the neighbor table with the devices that exist.
 func probeSubnets(ctx context.Context) {
-	ifaces, _ := net.Interfaces()
-	var targets []string
-	for _, ifc := range ifaces {
-		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 || ifc.Flags&net.FlagPointToPoint != 0 {
-			continue
-		}
-		addrs, _ := ifc.Addrs()
-		for _, a := range addrs {
-			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && ipn.IP.IsPrivate() {
-				targets = append(targets, SubnetTargets(ipn.IP, ipn.Mask)...)
-			}
-		}
-	}
+	targets := subnetTargets()
 	sem := make(chan struct{}, 128)
 	var wg sync.WaitGroup
 	for _, t := range targets {
@@ -423,4 +411,22 @@ func (h Host) Describe() string {
 		return "unidentified device"
 	}
 	return d
+}
+
+// subnetTargets lists every address to probe on the local private subnets.
+func subnetTargets() []string {
+	ifaces, _ := net.Interfaces()
+	var targets []string
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 || ifc.Flags&net.FlagPointToPoint != 0 {
+			continue
+		}
+		addrs, _ := ifc.Addrs()
+		for _, a := range addrs {
+			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && ipn.IP.IsPrivate() {
+				targets = append(targets, SubnetTargets(ipn.IP, ipn.Mask)...)
+			}
+		}
+	}
+	return targets
 }
