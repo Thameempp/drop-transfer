@@ -23,10 +23,11 @@ import (
 
 func newReceiveCmd(verbose *bool) *cobra.Command {
 	var (
-		dir  string
-		port int
-		yes  bool
-		once bool
+		dir    string
+		port   int
+		yes    bool
+		once   bool
+		newPIN bool
 	)
 	cmd := &cobra.Command{
 		Use:     "receive",
@@ -46,18 +47,19 @@ func newReceiveCmd(verbose *bool) *cobra.Command {
 			if !yes && !isTTY(os.Stdin) {
 				return usageErr("no terminal to ask for confirmation; pass --yes to accept transfers automatically")
 			}
-			return a.runReceive(cmd.Context(), dir, port, yes, once)
+			return a.runReceive(cmd.Context(), dir, port, yes, once, newPIN)
 		},
 	}
 	cmd.Flags().StringVar(&dir, "dir", "", "destination directory (default ~/Downloads)")
 	cmd.Flags().IntVar(&port, "port", 0, "TCP port to listen on (default: random free port)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "accept incoming transfers without asking")
+	cmd.Flags().BoolVar(&newPIN, "new-pin", false, "generate and show a new Drop PIN (the old one stops working)")
 	cmd.Flags().BoolVar(&once, "once", false, "exit after one transfer")
 	return cmd
 }
 
-func (a *app) runReceive(ctx context.Context, dir string, port int, yes, once bool) error {
-	if err := a.ensurePIN(); err != nil {
+func (a *app) runReceive(ctx context.Context, dir string, port int, yes, once, newPIN bool) error {
+	if err := a.ensurePIN(newPIN); err != nil {
 		return err
 	}
 	l, err := a.tr.Listen(net.JoinHostPort("", strconv.Itoa(port)))
@@ -244,12 +246,14 @@ func readLine(r *bufio.Reader) string {
 
 // ensurePIN creates a PIN on first use so receiving works with zero setup. The
 // PIN is shown once; only an Argon2id verifier is stored.
-func (a *app) ensurePIN() error {
+func (a *app) ensurePIN(renew bool) error {
 	_, err := a.pins.Load()
-	if err == nil {
+	if err == nil && !renew {
+		// Only a hash is stored, so the PIN cannot be shown again.
+		fmt.Fprintln(os.Stderr, "\nSenders need your Drop PIN (shown when it was created; it cannot be shown again).\nForgot it? Run `drop receive --new-pin`.")
 		return nil
 	}
-	if !errors.Is(err, security.ErrNoPIN) {
+	if err != nil && !errors.Is(err, security.ErrNoPIN) {
 		return err
 	}
 	pin, err := security.GeneratePIN(a.cfg.Security.PINLength)
