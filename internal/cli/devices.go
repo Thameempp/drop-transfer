@@ -73,6 +73,11 @@ at all. To send to a device it must run "drop receive".`,
 			fmt.Fprintln(tw, "NAME\tADDRESS\tDROP\tDETAILS")
 			for _, h := range shown {
 				state, details := "not running", h.Describe()
+				id := ""
+				if h.Drop != nil {
+					id = h.Drop.ID
+				}
+				name := a.labelAt(cmd.Context(), id, h.Name, h.IP)
 				if h.Drop != nil {
 					state = "ready"
 					details = sanitizeLabel(h.Drop.OS)
@@ -80,7 +85,7 @@ at all. To send to a device it must run "drop receive".`,
 						details += ", trusts you"
 					}
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", shorten(sanitizeLabel(h.Name), 32), h.IP, state, details)
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", shorten(name, 40), h.IP, state, details)
 			}
 			if err := tw.Flush(); err != nil {
 				return err

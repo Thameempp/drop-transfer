@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/thameem/drop/internal/active"
 	"github.com/thameem/drop/internal/config"
 	"github.com/thameem/drop/internal/device"
 	"github.com/thameem/drop/internal/discovery"
@@ -29,12 +30,15 @@ type app struct {
 	limiter   *security.Limiter
 	trust     *security.TrustStore // receiver side: devices that may skip the PIN
 	trustedBy *security.TrustedBy  // sender side: receivers believed to trust us
+	active    *active.Store        // active-sharing settings
+	names     *active.Names        // private device nicknames
 	tr        transport.Transport
 	disc      interface {
 		discovery.Advertiser
 		discovery.Browser
 	}
 	verbose bool
+	neigh   map[string]string // lazily read neighbor table: IPv4 to MAC
 }
 
 func loadApp(verbose bool) (*app, error) {
@@ -67,7 +71,7 @@ func loadApp(verbose bool) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &app{trust: trust, trustedBy: security.OpenTrustedBy(dir), cfgDir: dir, cfg: cfg, identity: id, pins: security.OpenPINStore(dir), limiter: lim, tr: transport.TCP{}, disc: discovery.MDNS{}, verbose: verbose}, nil
+	return &app{trust: trust, trustedBy: security.OpenTrustedBy(dir), active: active.OpenStore(dir), names: active.OpenNames(dir), cfgDir: dir, cfg: cfg, identity: id, pins: security.OpenPINStore(dir), limiter: lim, tr: transport.TCP{}, disc: discovery.MDNS{}, verbose: verbose}, nil
 }
 
 func (a *app) self() transfer.Self {

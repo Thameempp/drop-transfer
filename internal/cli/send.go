@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/thameem/drop/internal/discovery"
 	"github.com/thameem/drop/internal/filesystem"
+	"github.com/thameem/drop/internal/power"
 	"github.com/thameem/drop/internal/project"
 	"github.com/thameem/drop/internal/security"
 	"github.com/thameem/drop/internal/transfer"
@@ -192,6 +194,7 @@ func (a *app) sendOnce(ctx context.Context, tgt target, ttype security.TransferT
 			"  • a firewall is blocking the connection\n  • network isolation is enabled", tgt.label, err))
 	}
 	defer raw.Close()
+	defer power.KeepAwake("sending with drop")()
 
 	check := security.Any()
 	if tgt.id != "" {
@@ -211,10 +214,13 @@ func (a *app) sendOnce(ctx context.Context, tgt target, ttype security.TransferT
 	if pol.RequiresAuthorization(ttype) && pin != "" && interactive {
 		fmt.Fprint(os.Stderr, "Authenticating…\r")
 	}
-	pb := newProgress(os.Stderr, interactive, "")
+	pb := newProgress(os.Stderr, interactive, "Sending")
+	if ttype == security.TransferFile {
+		pb.SetFile("Sending", "", sanitizeLabel(filepath.Base(what)))
+	}
 	opts := transfer.SendOptions{
 		Progress: pb.Update, PIN: pin, Policy: pol, Logf: a.debugf,
-		OnFile: func(i, n int, p string) { pb.SetLabel(fmt.Sprintf("[%d/%d] %s", i, n, shorten(p, 32))) },
+		OnFile: func(i, n int, p string) { pb.SetFile("Sending", fmt.Sprintf("[%d/%d]", i, n), sanitizeLabel(p)) },
 		OnAuthenticated: func() {
 			if interactive {
 				fmt.Fprint(os.Stderr, "\033[K")
@@ -349,13 +355,25 @@ func (a *app) resolveTarget(ctx context.Context, o sendOptions) (target, error) 
 		fmt.Fprint(os.Stderr, "Searching for nearby devices…\r")
 	}
 	query := o.to
+	wantIP := ""
 	if query == "localhost" || query == "self" {
 		query = a.identity.ID
+	} else if key, ok := a.names.Resolve(query); ok {
+		if isAddrKey(key) {
+			// A nickname given to a device by its address: find it by address.
+			if wantIP = a.ipForKey(ctx, key); wantIP == "" {
+				return target{}, withCode(ExitUnavailable, fmt.Errorf("%q is not on your network right now", o.to))
+			}
+		} else {
+			query = key // a nickname you gave a device
+		}
 	}
 	// With --to, stop as soon as that exact device shows up instead of waiting
 	// out the whole timeout; without it, collect everyone for the menu.
 	var stop func([]discovery.Peer) bool
-	if query != "" {
+	if wantIP != "" {
+		stop = func(ps []discovery.Peer) bool { return len(peersAtIP(ps, wantIP)) > 0 }
+	} else if query != "" {
 		stop = func(ps []discovery.Peer) bool { return len(discovery.Exact(ps, query)) == 1 }
 	}
 	peers, err := a.disc.BrowseUntil(ctx, o.timeout, stop)
@@ -373,12 +391,19 @@ func (a *app) resolveTarget(ctx context.Context, o sendOptions) (target, error) 
 	waiting := "`drop receive`"
 
 	if o.to != "" {
-		m := discovery.Match(cands, query)
+		var m []discovery.Peer
+		if wantIP != "" {
+			m = peersAtIP(cands, wantIP)
+		} else {
+			m = discovery.Match(cands, query)
+		}
 		switch len(m) {
 		case 0:
 			return target{}, withCode(ExitUnavailable, fmt.Errorf("no nearby device matches %q (found %d); run %s on the other device, or `drop devices` to see what is visible", o.to, len(cands), waiting))
 		case 1:
-			return peerTarget(m[0]), nil
+			t := peerTarget(m[0])
+			t.label = a.labelAt(ctx, m[0].ID, m[0].Name, hostOf(m[0]))
+			return t, nil
 		}
 		names := ""
 		for _, p := range m {
@@ -393,7 +418,14 @@ func (a *app) resolveTarget(ctx context.Context, o sendOptions) (target, error) 
 			"On the other device run %s. If it is running, check that both\n"+
 			"devices are on the same network and that no firewall blocks mDNS (UDP 5353)", waiting))
 	}
-	p, err := pickPeer(cands, a.trustedBy.Has)
+	p, err := pickPeer(cands, a.trustedBy.Has, func(id, name string) string {
+		for _, c := range cands {
+			if c.ID == id {
+				return a.labelAt(ctx, id, name, hostOf(c))
+			}
+		}
+		return a.label(id, name)
+	})
 	if err != nil {
 		return target{}, err
 	}
@@ -446,4 +478,16 @@ func (a *app) dialAny(ctx context.Context, addrs []string) (transport.Conn, erro
 		}
 	}
 	return nil, last
+}
+
+// hostOf is the first IPv4 address a discovered device answers on ("" if none).
+func hostOf(p discovery.Peer) string {
+	for _, addr := range p.Addrs {
+		if h, _, err := net.SplitHostPort(addr); err == nil {
+			if ip := net.ParseIP(h); ip != nil && ip.To4() != nil {
+				return ip.To4().String()
+			}
+		}
+	}
+	return ""
 }

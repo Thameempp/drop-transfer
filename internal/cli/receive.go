@@ -16,6 +16,7 @@ import (
 
 	"github.com/thameem/drop/internal/config"
 	"github.com/thameem/drop/internal/discovery"
+	"github.com/thameem/drop/internal/power"
 	"github.com/thameem/drop/internal/protocol"
 	"github.com/thameem/drop/internal/security"
 	"github.com/thameem/drop/internal/transfer"
@@ -81,16 +82,24 @@ func (a *app) runReceive(ctx context.Context, dir string, port int, yes, once, n
 		defer stop()
 	}
 
-	fmt.Fprintf(os.Stderr, "%s is ready to receive on port %d → %s\nCtrl+C to stop.\n", a.identity.Name, p, dir)
+	fmt.Fprintf(os.Stderr, "%s is ready to receive on port %d → %s\n", a.identity.Name, p, dir)
+	if _, running := serviceState(); running {
+		fmt.Fprintln(os.Stderr, "Note: the background active-sharing receiver is running too. If a sender reaches it instead of this window, the transfer is declined. Pause it with `drop active service stop`.")
+	}
+	if b := a.activeBanner(); b != "" {
+		fmt.Fprintln(os.Stderr, b)
+	}
+	fmt.Fprintln(os.Stderr, "Ctrl+C to stop.")
 
 	in := bufio.NewReader(os.Stdin)
 	var pbMu sync.Mutex
 	var pb *progressBar
 	r := &transfer.Receiver{
-		Self:   a.self(),
-		Dir:    dir,
-		Policy: a.policy(),
-		Trust:  a.trust,
+		KeepAwake: func() func() { return power.KeepAwake("receiving with drop") },
+		Self:      a.self(),
+		Dir:       dir,
+		Policy:    a.policy(),
+		Trust:     a.trust,
 		// No plaintext mode: every connection is upgraded to TLS 1.3 first.
 		Upgrade: func(c transport.Conn) (transport.Conn, error) {
 			return security.Server(c, a.identity, security.Any())
@@ -105,12 +114,21 @@ func (a *app) runReceive(ctx context.Context, dir string, port int, yes, once, n
 			}
 		},
 		Approver: transfer.ApproverFunc(func(ctx context.Context, inc transfer.Incoming) transfer.Decision {
-			return approve(in, dir, yes, inc)
+			if d, why := a.activeAccept(ctx, inc); d.Accept {
+				fmt.Fprintf(os.Stderr, "✓ Active sharing: accepting %s from %s → %s\n", activeWhat(inc), a.label(inc.KeyID, inc.From.Name), d.Dir)
+				return d
+			} else if why != "" {
+				fmt.Fprintf(os.Stderr, "Active sharing is not applied (%s); asking instead.\n", why)
+			}
+			return approve(in, dir, yes, inc, a.labelAt(ctx, inc.KeyID, inc.From.Name, hostPart(inc.Addr)))
 		}),
 		OnProgress: func(inc transfer.Incoming, done, total int64) {
 			pbMu.Lock()
 			if pb == nil {
-				pb = newProgress(os.Stderr, isTTY(os.Stderr), "Receiving "+inc.Name)
+				pb = newProgress(os.Stderr, isTTY(os.Stderr), "Receiving")
+				if inc.Type != security.TransferFolder {
+					pb.SetFile("Receiving", "", sanitizeLabel(inc.Name))
+				}
 			}
 			p := pb
 			pbMu.Unlock()
@@ -123,7 +141,7 @@ func (a *app) runReceive(ctx context.Context, dir string, port int, yes, once, n
 			}
 			p := pb
 			pbMu.Unlock()
-			p.SetLabel(fmt.Sprintf("Receiving [%d/%d] %s", i, n, shorten(sanitizeLabel(path), 32)))
+			p.SetFile("Receiving", fmt.Sprintf("[%d/%d]", i, n), sanitizeLabel(path))
 		},
 		OnText: func(inc transfer.Incoming, data []byte) {
 			text := string(data)
@@ -180,7 +198,7 @@ func (a *app) runReceive(ctx context.Context, dir string, port int, yes, once, n
 // approve asks the user (or auto-accepts with --yes). Authorization (the PIN)
 // has already happened by the time this is called; this is the consent step.
 // Existing files are never replaced without an explicit choice.
-func approve(in *bufio.Reader, dir string, yes bool, inc transfer.Incoming) transfer.Decision {
+func approve(in *bufio.Reader, dir string, yes bool, inc transfer.Incoming, from string) transfer.Decision {
 	origDir := dir
 	// Text is shown live, with no prompt: it is never written to disk, and on a
 	// terminal control characters are stripped before it is printed.
@@ -202,7 +220,7 @@ func approve(in *bufio.Reader, dir string, yes bool, inc transfer.Incoming) tran
 	// [d] changes the destination for this transfer only.
 	chosen := dir
 	for {
-		fmt.Fprintf(os.Stderr, "\nIncoming transfer\n\n  From: %s (%s)\n  %s\n", sanitizeLabel(inc.From.Name), inc.Addr, what)
+		fmt.Fprintf(os.Stderr, "\nIncoming transfer\n\n  From: %s (%s)\n  %s\n", from, inc.Addr, what)
 		fmt.Fprintf(os.Stderr, "  Save to: %s\n", chosen)
 		fmt.Fprintf(os.Stderr, "  Size: %s\n  Authentication: %s\n\n", humanBytes(inc.Size), authLine)
 		fmt.Fprint(os.Stderr, "Accept? [Y/n], or d to choose another folder: ")
@@ -367,4 +385,19 @@ While accepting a transfer you can still choose another folder with "d".`,
 	}
 	cmd.Flags().BoolVar(&reset, "reset", false, "clear the default folder")
 	return cmd
+}
+
+func activeWhat(inc transfer.Incoming) string {
+	if inc.Type == security.TransferFolder {
+		return "folder " + sanitizeLabel(inc.Name)
+	}
+	return sanitizeLabel(inc.Name)
+}
+
+func hostPart(addr string) string {
+	h, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	return h
 }

@@ -38,6 +38,9 @@ type Incoming struct {
 	AuthMethod string
 	// Fingerprint identifies the sender's key, for display when offering trust.
 	Fingerprint string
+	// KeyID is the device ID derived from the sender's TLS-verified key (not the
+	// name it claims). Empty if the connection carried no key.
+	KeyID string
 }
 
 // Conflict says what to do when the destination name already exists.
@@ -85,6 +88,9 @@ type Receiver struct {
 	Self     Self
 	Dir      string
 	Approver Approver
+	// KeepAwake, if set, is called when a connection arrives and its release when
+	// the connection is done, so the machine does not sleep mid-transfer.
+	KeepAwake func() (release func())
 	// OnProgress is optional. It is only called for accepted transfers.
 	OnProgress func(in Incoming, done, total int64)
 	// Upgrade secures a freshly accepted connection (TLS) before any protocol
@@ -169,6 +175,9 @@ func (r *Receiver) HandleOne(ctx context.Context, l transport.Listener) (*Receiv
 
 func (r *Receiver) handle(ctx context.Context, conn transport.Conn) (rec *Received, err error) {
 	defer closeOnCancel(ctx, conn)()
+	if r.KeepAwake != nil {
+		defer r.KeepAwake()()
+	}
 	addr := conn.RemoteAddr()
 	var in *Incoming
 	secured := false
@@ -238,6 +247,7 @@ func (r *Receiver) handle(ctx context.Context, conn transport.Conn) (rec *Receiv
 				return nil, errors.New("authorization already completed")
 			}
 			if r.Auth == nil {
+				_ = protocol.WriteMsg(conn, &protocol.Error{Message: "this device does not take a Drop PIN; it only receives from devices it already trusts. Ask its owner to run `drop receive`"})
 				return nil, errors.New("this receiver cannot authorize senders")
 			}
 			if err := r.Auth.Serve(conn); err != nil {
@@ -262,6 +272,7 @@ func (r *Receiver) handle(ctx context.Context, conn transport.Conn) (rec *Receiv
 		AuthMethod: method, Files: req.Files, Dirs: req.Dirs}
 	if len(peerKey) > 0 {
 		incoming.Fingerprint = device.Fingerprint(peerKey)
+		incoming.KeyID = device.IDFromPublicKey(peerKey)
 	}
 	in = &incoming
 	if r.Policy.RequiresAuthorization(ttype) && !authorized {
@@ -486,7 +497,7 @@ func (r *Receiver) receiveOneFile(conn transport.Conn, path string, e Planned, d
 	if r.OnProgress != nil {
 		pw.fn = func(d, t int64) { r.OnProgress(in, d, t) }
 	}
-	n, err := io.Copy(io.MultiWriter(f, h, pw), io.LimitReader(idleReader{conn}, e.Size))
+	n, err := copyBulk(io.MultiWriter(f, h, pw), io.LimitReader(idleReader{conn}, e.Size))
 	if err != nil || n != e.Size {
 		f.Close()
 		return nil, fmt.Errorf("receive %s: connection failed after %d of %d bytes: %w", e.Path, n, e.Size, orEOF(err))
@@ -546,7 +557,7 @@ func (r *Receiver) receiveFile(conn transport.Conn, in Incoming, wantHash string
 	if r.OnProgress != nil {
 		ch.fn = func(d, t int64) { r.OnProgress(in, d, t) }
 	}
-	n, err := io.Copy(io.MultiWriter(tmp, ch), io.LimitReader(idleReader{conn}, in.Size))
+	n, err := copyBulk(io.MultiWriter(tmp, ch), io.LimitReader(idleReader{conn}, in.Size))
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("receive %q: connection failed after %d of %d bytes: %w", in.Name, n, in.Size, err)

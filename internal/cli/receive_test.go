@@ -13,7 +13,7 @@ import (
 func approveWith(t *testing.T, input, dir string) transfer.Decision {
 	t.Helper()
 	inc := transfer.Incoming{Name: "a.txt", Size: 3, Type: security.TransferFile, Authorized: true, AuthMethod: "trusted"}
-	return approve(bufio.NewReader(strings.NewReader(input)), dir, false, inc)
+	return approve(bufio.NewReader(strings.NewReader(input)), dir, false, inc, "sender")
 }
 
 func TestApproveDefaultsToConfiguredDir(t *testing.T) {
@@ -45,7 +45,7 @@ func TestApproveDEmptyKeepsFolder(t *testing.T) {
 
 func TestApproveTextWithoutPrompt(t *testing.T) {
 	inc := transfer.Incoming{Name: "", Size: 5, Type: security.TransferText}
-	d := approve(bufio.NewReader(strings.NewReader("")), t.TempDir(), false, inc)
+	d := approve(bufio.NewReader(strings.NewReader("")), t.TempDir(), false, inc, "sender")
 	if !d.Accept {
 		t.Fatalf("text should be accepted without asking: %+v", d)
 	}

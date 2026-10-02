@@ -11,6 +11,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -50,7 +51,7 @@ func HashFile(path string) (string, int64, error) {
 	}
 	defer f.Close()
 	h := sha256.New()
-	n, err := io.Copy(h, f)
+	n, err := copyBulk(h, f)
 	if err != nil {
 		return "", 0, fmt.Errorf("hash %s: %w", path, err)
 	}
@@ -119,3 +120,16 @@ func (t *treeHash) file(path string, size int64, sum []byte) {
 	fmt.Fprintf(t.h, "F\x00%s\x00%d\x00%x\n", path, size, sum)
 }
 func (t *treeHash) sum() string { return hex.EncodeToString(t.h.Sum(nil)) }
+
+// copyBufSize is the I/O buffer for bulk data. The 32 KiB io.Copy default means
+// many small reads, writes and system calls, which dominates on fast links.
+const copyBufSize = 1 << 20
+
+var copyBufs = sync.Pool{New: func() any { b := make([]byte, copyBufSize); return &b }}
+
+// copyBulk is io.Copy with a large pooled buffer.
+func copyBulk(dst io.Writer, src io.Reader) (int64, error) {
+	bp := copyBufs.Get().(*[]byte)
+	defer copyBufs.Put(bp)
+	return io.CopyBuffer(dst, src, *bp)
+}

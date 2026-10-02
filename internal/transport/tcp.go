@@ -26,8 +26,20 @@ func (TCP) Dial(ctx context.Context, addr string) (Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to %s: %w", addr, err)
 	}
-	return &tcpConn{c}, nil
+	return &tcpConn{tune(c)}, nil
 }
+
+// tune enlarges the socket buffers so a fast link is not limited by the OS
+// defaults. The OS clamps the values it does not allow; errors are ignored.
+func tune(c net.Conn) net.Conn {
+	if t, ok := c.(*net.TCPConn); ok {
+		t.SetReadBuffer(socketBuf)
+		t.SetWriteBuffer(socketBuf)
+	}
+	return c
+}
+
+const socketBuf = 4 << 20
 
 type tcpListener struct{ l net.Listener }
 
@@ -36,7 +48,7 @@ func (t *tcpListener) Accept() (Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &tcpConn{c}, nil
+	return &tcpConn{tune(c)}, nil
 }
 func (t *tcpListener) Addr() string { return t.l.Addr().String() }
 func (t *tcpListener) Close() error { return t.l.Close() }

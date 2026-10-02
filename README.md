@@ -10,6 +10,41 @@ drop main.py
 
 > **Status: early.** File, folder and plain-text transfer work over TLS 1.3, authorized by a Drop PIN. Project awareness (detection, `.gitignore`, smart exclusions, secret detection) and Git integration (`drop diff`, `drop git`) work. The security model is documented — and not independently audited — in [docs/security.md](docs/security.md).
 
+## Active sharing and device nicknames
+
+**Active sharing** lets devices you chose send you files without you pressing Accept each time. It saves into one dedicated folder and works only when *all* of these hold: `drop receive` is running, the sender is a **trusted** device you explicitly allowed, you are on a **saved network**, the sender is on that same local network, and active sharing is on. Anything else asks as usual. Active sharing switches itself on whenever you connect to a saved network and is paused (every transfer asks) on any other; `drop active off` pauses it everywhere. You can save several networks (home, office…).
+
+```bash
+drop active setup --dir ~/Shared --device "Work PC" --network Home   # run while connected to that network
+drop active status        # settings, and whether you are on a saved network right now
+drop active off           # pause (settings kept); `drop active on` resumes
+drop active allow Phone   # more devices (they must already be trusted)
+drop active deny Phone
+drop active network add Office   # also allow the network you are on now (name optional: uses the Wi-Fi name)
+drop active network list         # saved networks, marking the one you are on
+drop active network remove Office
+```
+
+A network is recognised by its **router**, not the Wi-Fi name (systems hide the name from programs, and it is easy to copy), so the same router works over Wi-Fi or Ethernet. Auto-accepted files are saved with the normal rename-on-conflict rule, never overwriting.
+
+**So the other person never has to run `drop receive`:** on the receiving computer, after `drop active setup`, run
+
+```bash
+drop active service install   # starts a small background receiver at every login (macOS, Linux, Windows)
+drop active service status    # also: start, stop, uninstall
+```
+
+While it runs, allowed devices on your saved network can send you files with nothing to do. It never asks anything and declines everything else (no PIN is accepted by it, so there is nothing to guess). The computer must be awake and logged in, and if you run `drop receive` yourself while it is running, a sender may reach the background receiver instead and be declined: use `drop active service stop` first. Output goes to `service.log` in the drop config folder.
+
+**Nicknames:** `drop name "Work PC" Office` gives a device a name only you see (stored on this machine; the device is not told). You can also name a device **by its address** as shown in `drop devices`, even one that is not running drop yet:
+
+```bash
+drop name 192.168.1.8 Mom      # remembered by the device's hardware address, so it survives the router giving it a new IP
+drop --to Mom report.pdf       # send using just the nickname (the device must be running `drop receive`)
+drop name                      # list nicknames;  drop name Mom --clear  removes one
+```
+Nicknames show in `drop devices`, the send menu, `drop security trusted` and receive prompts.
+
 ## Install
 
 Requires [Go](https://go.dev/dl/) (version in `go.mod`). Git is only needed for `drop diff` / `drop git`.

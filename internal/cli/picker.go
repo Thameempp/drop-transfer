@@ -74,10 +74,10 @@ func pickOne(title string, items []string) (int, error) {
 }
 
 // pickPeer lets the user choose among discovered devices.
-func pickPeer(peers []discovery.Peer, trusted func(id string) bool) (discovery.Peer, error) {
+func pickPeer(peers []discovery.Peer, trusted func(id string) bool, label func(id, name string) string) (discovery.Peer, error) {
 	items := make([]string, len(peers))
 	for i, p := range peers {
-		items[i] = fmt.Sprintf("%s  (%s)", sanitizeLabel(p.Name), sanitizeLabel(p.OS))
+		items[i] = fmt.Sprintf("%s  (%s)", label(p.ID, p.Name), sanitizeLabel(p.OS))
 		if trusted != nil && trusted(p.ID) {
 			items[i] += "  ✓ Trusted"
 		}

@@ -214,7 +214,7 @@ func (a *app) listTrusted() error {
 		if a.trust.Expired(d) {
 			status = "expired (needs the PIN)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", sanitizeLabel(d.Name), sanitizeLabel(d.OS), d.ID[:8],
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", a.label(d.ID, d.Name), sanitizeLabel(d.OS), d.ID[:8],
 			d.AddedAt.Local().Format("2006-01-02"), d.LastUsed.Local().Format("2006-01-02"), status)
 	}
 	return tw.Flush()

@@ -94,7 +94,7 @@ func SendText(ctx context.Context, conn transport.Conn, self Self, text []byte, 
 // while sending. The receiver's confirmation must equal req.SHA256.
 func streamBytes(c transport.Conn, src io.Reader, req *protocol.TransferRequest, progress ProgressFunc) (string, error) {
 	ch := &countingHasher{h: sha256.New(), total: req.Size, fn: progress}
-	n, err := io.Copy(c, io.TeeReader(io.LimitReader(src, req.Size), ch))
+	n, err := copyBulk(c, io.TeeReader(io.LimitReader(src, req.Size), ch))
 	if err != nil {
 		return "", fmt.Errorf("send: connection failed after %d of %d bytes: %w", n, req.Size, err)
 	}
@@ -183,7 +183,7 @@ func sendOneFile(c transport.Conn, root string, e ManifestEntry, done *int64, to
 	}
 	h := sha256.New()
 	pw := &tally{done: done, total: total, fn: progress}
-	n, err := io.Copy(io.MultiWriter(c, h, pw), io.LimitReader(f, e.Size))
+	n, err := copyBulk(io.MultiWriter(c, h, pw), io.LimitReader(f, e.Size))
 	if err != nil {
 		return nil, fmt.Errorf("send %s: connection failed after %d of %d bytes: %w", e.Path, n, e.Size, err)
 	}

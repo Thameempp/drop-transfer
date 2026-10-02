@@ -85,3 +85,18 @@ A receiver can remember a sender so it no longer needs the PIN. This is an ident
 
 ## Future: temporary PINs (designed for, not built)
 A temporary PIN (`drop pin`, expiring, single-use) would be a second verifier source consulted by the same `Authenticator` and the same `Limiter`.
+
+## Active sharing
+
+Active sharing skips the "Accept?" prompt, so it is deliberately narrow. A transfer is auto-accepted only when **every** condition holds, checked by the receiver on that connection:
+
+1. active sharing is on and a dedicated folder is set;
+2. the sender was recognized as a **trusted device** by its TLS-verified key (not by a name or ID it claims), and its key-derived ID is on the allow list you made with `drop active allow`;
+3. this machine's default gateway has a hardware address matching a **saved network** (the router, `drop active network add`); if the network cannot be identified it fails closed;
+4. the sender's address is on a directly attached private network of this machine (not a VPN or tunnel).
+
+Files go only to the dedicated folder, never overwrite, and plain-text/PIN rules are unchanged. Revoking a trusted device (`drop security untrust`) stops its auto-accept at once, as does `drop active off`. Settings live in `active.json` (0600) and are re-read on every transfer, so a running `drop receive` follows changes immediately.
+
+**Limits.** The network check is the router's hardware address: someone who copies your router's address on another network, or physically sits on your network with an allowed device's key, gets the same treatment, which is why the device key (not a PIN or a name) is the real gate. Auto-accepted transfers have no size limit; the disk is the limit. Nicknames (`nicknames.json`) are local labels only and grant nothing.
+
+**Background receiver (`drop active service`).** `drop active serve` is `drop receive` without any prompt: it has no PIN authenticator (a PIN attempt is refused outright, so it exposes nothing to guess), declines text and anything not allowed by the rules above, and re-reads `active.json` on every transfer. `service install` registers it to start at login (macOS LaunchAgent, Linux systemd user unit, Windows scheduled task at logon; all per-user, no administrator rights) and records the path of the `drop` binary, so re-run it after moving or reinstalling. `service uninstall` removes it completely.

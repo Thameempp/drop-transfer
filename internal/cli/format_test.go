@@ -86,3 +86,19 @@ func TestDialAnySkipsUnreachableAddresses(t *testing.T) {
 		t.Fatal("expected an error for no addresses")
 	}
 }
+
+func TestProgressLineNeverExceedsTerminalWidth(t *testing.T) {
+	p := newProgress(nil, true, "")
+	p.SetFile("Receiving", "[12/340]", "x")
+	p.name = "some/very/long/path/to/Movie.Name.2024.1080p.BluRay.x265.10bit-GROUP.mkv"
+	for _, w := range []int{20, 30, 40, 60, 80, 120} {
+		line := p.render(0.456, "1.2 GB", "4.5 GB", "31.2 MB/s", "  ETA 1m2s", w)
+		if n := len([]rune(line)); n > w-1 {
+			t.Errorf("width %d: line has %d columns: %q", w, n, line)
+		}
+	}
+	line := p.render(0.5, "1 GB", "2 GB", "10 MB/s", "", 120)
+	if !strings.Contains(line, "[12/340]") || !strings.Contains(line, "50%") {
+		t.Errorf("missing file counter or percent: %q", line)
+	}
+}

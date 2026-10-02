@@ -70,7 +70,7 @@ func newRoot() *cobra.Command {
 	root.Version = Version
 	addSendFlags(root, &send)
 
-	root.AddCommand(newSendCmd(&verbose), newReceiveCmd(&verbose), newReceiveDirCmd(&verbose), newDevicesCmd(&verbose), newDiffCmd(&verbose), newGitCmd(&verbose), newSecurityCmd(&verbose), newStatusCmd(&verbose))
+	root.AddCommand(newSendCmd(&verbose), newReceiveCmd(&verbose), newReceiveDirCmd(&verbose), newActiveCmd(&verbose), newNameCmd(&verbose), newDevicesCmd(&verbose), newDiffCmd(&verbose), newGitCmd(&verbose), newSecurityCmd(&verbose), newStatusCmd(&verbose))
 	return root
 }
 
