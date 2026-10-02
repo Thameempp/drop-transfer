@@ -6,11 +6,19 @@ LDFLAGS := -X github.com/thameem/drop/internal/cli.Version=$(VERSION)
 
 .PHONY: build install test vet check smoke clean
 
+ifeq ($(OS),Windows_NT)
+build:            ## build ./bin/drop.exe
+	go build -ldflags "$(LDFLAGS)" -o bin/drop.exe ./cmd/drop
+
+install:          ## build and install drop into a directory already on your PATH
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1
+else
 build:            ## build ./bin/drop
 	go build -ldflags "$(LDFLAGS)" -o bin/drop ./cmd/drop
 
 install:          ## build and install drop into a directory already on your PATH (override: BINDIR=...)
 	VERSION="$(VERSION)" BINDIR="$(BINDIR)" sh scripts/install.sh
+endif
 
 test:             ## unit and integration tests (with the race detector)
 	go test -race -count=1 ./...

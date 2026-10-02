@@ -22,7 +22,7 @@ drop --version
 
 `make install` picks the first writable directory already on your `PATH` from `~/.local/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, so `drop` works in a new terminal right away. If none qualifies it creates `~/.local/bin` and adds it to your shell startup file (then open a new terminal). Choose the location yourself with `make install BINDIR=/some/dir`; if another `drop` earlier on your `PATH` would shadow the new one, it tells you which.
 
-Or build without installing: `make build` → `./bin/drop`. Do the same on **every** machine that should send or receive (macOS, Linux; on Windows without `make` use `go build -o drop.exe ./cmd/drop` and put it on your PATH).
+Or build without installing: `make build` → `./bin/drop` (or `./bin/drop.exe` on Windows). On Windows, run `.\install.bat` (or `make install` if make is installed, or `powershell -ExecutionPolicy Bypass -File scripts\install.ps1`) to automatically build and install `drop.exe` to a directory on your PATH. Do the same on **every** machine that should send or receive.
 
 **Verify it works** on your machine in about 10 seconds (starts two instances locally and exercises a file, a project folder, text, a Git patch, a wrong PIN and lockout):
 

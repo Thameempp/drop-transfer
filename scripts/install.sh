@@ -13,10 +13,21 @@ set -eu
 VERSION=${VERSION:-0.1.0-dev}
 LDFLAGS="-X github.com/thameem/drop/internal/cli.Version=$VERSION"
 
+if ! command -v go >/dev/null 2>&1; then
+  echo "error: Go is not installed or not on your PATH."
+  echo "install Go from https://go.dev/dl/ (or: brew install go) and try again."
+  exit 1
+fi
+
 on_path() { case ":$PATH:" in *":$1:"*) return 0 ;; *) return 1 ;; esac; }
 
+EXE=""
+case "$(uname -s 2>/dev/null || true)" in
+  MINGW*|MSYS*|CYGWIN*) EXE=".exe" ;;
+esac
+
 pick_dir() {
-  for d in "$HOME/.local/bin" "$HOME/bin" /opt/homebrew/bin /usr/local/bin; do
+  for d in "$HOME/.local/bin" "$HOME/bin" /opt/homebrew/bin /usr/local/bin "$HOME/go/bin"; do
     if [ -d "$d" ] && [ -w "$d" ] && on_path "$d"; then echo "$d"; return 0; fi
   done
   return 1
@@ -38,9 +49,9 @@ TMP=$(mktemp "$DIR/.drop-install.XXXXXX")
 trap 'rm -f "$TMP"' EXIT
 go build -ldflags "$LDFLAGS" -o "$TMP" ./cmd/drop
 chmod 755 "$TMP"
-mv -f "$TMP" "$DIR/drop"
+mv -f "$TMP" "$DIR/drop$EXE"
 trap - EXIT
-echo "installed: $DIR/drop"
+echo "installed: $DIR/drop$EXE"
 
 # If the directory is not on PATH yet, add it to the shell startup file.
 if ! on_path "$DIR"; then
@@ -64,12 +75,12 @@ fi
 # Make sure the drop that will actually run is the one we just installed.
 hash -r 2>/dev/null || true
 if on_path "$DIR"; then
-  FOUND=$(command -v drop 2>/dev/null || true)
-  if [ -n "$FOUND" ] && [ "$FOUND" != "$DIR/drop" ]; then
+  FOUND=$(command -v "drop$EXE" 2>/dev/null || command -v drop 2>/dev/null || true)
+  if [ -n "$FOUND" ] && [ "$FOUND" != "$DIR/drop$EXE" ] && [ "$FOUND" != "$DIR/drop" ]; then
     echo "WARNING: another 'drop' comes first on your PATH and will shadow this one:"
     echo "         $FOUND"
     echo "         remove it (rm \"$FOUND\") or put $DIR earlier in PATH."
   else
-    echo "check: $("$DIR/drop" --version)"
+    echo "check: $("$DIR/drop$EXE" --version)"
   fi
 fi
