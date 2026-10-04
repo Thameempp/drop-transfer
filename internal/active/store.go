@@ -26,10 +26,14 @@ type Network struct {
 
 // Settings is the stored active-sharing configuration.
 type Settings struct {
-	Enabled  bool      `json:"enabled"`
-	Dir      string    `json:"dir"`
-	Devices  []string  `json:"devices"` // trusted device IDs (hash of the device key)
-	Networks []Network `json:"networks"`
+	Enabled bool `json:"enabled"`
+	// Clipboard turns on live clipboard sharing: allowed devices on a saved
+	// network can put text on this computer's clipboard with no prompt. It is
+	// independent of Enabled (file active sharing) and needs no folder.
+	Clipboard bool      `json:"clipboard"`
+	Dir       string    `json:"dir"`
+	Devices   []string  `json:"devices"` // trusted device IDs (hash of the device key)
+	Networks  []Network `json:"networks"`
 }
 
 // Store persists Settings in active.json (0600). Every read goes to disk, so a
@@ -145,10 +149,27 @@ type Decision struct {
 	Reason string // why not, for display; empty when OK or when active sharing is simply off
 }
 
-// Check decides whether an incoming transfer is auto-accepted. keyID must be the
-// device ID derived from the TLS-verified key and trusted must say the sender
-// was recognized as a trusted device on this connection; both come from the
-// receiver, never from what the sender claims. gatewayMAC is the router this
+// trustedCircle is the part of the decision shared by files and clipboard: a
+// trusted, allowed sender on a saved network, on the local link. The reason is
+// for display; empty with ok=false means "simply not applicable".
+func (st Settings) trustedCircle(keyID string, trusted bool, gatewayMAC string, onLink bool) (reason string, ok bool) {
+	switch {
+	case !trusted || keyID == "" || !st.HasDevice(keyID):
+		return "", false
+	case gatewayMAC == "":
+		return "the current network could not be identified", false
+	case !st.HasNetwork(gatewayMAC):
+		return "this is not a saved network", false
+	case !onLink:
+		return "the sender is not on your local network", false
+	}
+	return "", true
+}
+
+// Check decides whether an incoming file or folder is auto-accepted. keyID must
+// be the device ID derived from the TLS-verified key and trusted must say the
+// sender was recognized as a trusted device on this connection; both come from
+// the receiver, never from what the sender claims. gatewayMAC is the router this
 // machine is currently using ("" if unknown) and onLink says whether the
 // sender's address is on a directly attached private network.
 func (st Settings) Check(keyID string, trusted bool, gatewayMAC string, onLink bool) Decision {
@@ -157,16 +178,23 @@ func (st Settings) Check(keyID string, trusted bool, gatewayMAC string, onLink b
 		return Decision{}
 	case st.Dir == "":
 		return Decision{Reason: "no active-sharing folder is set"}
-	case !trusted || keyID == "" || !st.HasDevice(keyID):
-		return Decision{}
-	case gatewayMAC == "":
-		return Decision{Reason: "the current network could not be identified"}
-	case !st.HasNetwork(gatewayMAC):
-		return Decision{Reason: "this is not a saved network"}
-	case !onLink:
-		return Decision{Reason: "the sender is not on your local network"}
+	}
+	if reason, ok := st.trustedCircle(keyID, trusted, gatewayMAC, onLink); !ok {
+		return Decision{Reason: reason}
 	}
 	return Decision{OK: true, Dir: st.Dir}
+}
+
+// CheckClipboard decides whether an incoming clipboard transfer is applied
+// without asking. Same sender, network and link rules as Check.
+func (st Settings) CheckClipboard(keyID string, trusted bool, gatewayMAC string, onLink bool) Decision {
+	if !st.Clipboard {
+		return Decision{}
+	}
+	if reason, ok := st.trustedCircle(keyID, trusted, gatewayMAC, onLink); !ok {
+		return Decision{Reason: reason}
+	}
+	return Decision{OK: true}
 }
 
 // Names stores private nicknames: device ID to the name only this user sees.

@@ -109,6 +109,9 @@ type Receiver struct {
 	OnFile func(in Incoming, index, count int, path string)
 	// OnText receives accepted, verified plain text. Text is never written to disk.
 	OnText func(in Incoming, data []byte)
+	// OnClipboard receives accepted, verified clipboard entries (newest first).
+	// They are never written to disk by the receiver.
+	OnClipboard func(in Incoming, items []string)
 	// Logf receives safe, secret-free diagnostics. Optional.
 	Logf func(format string, args ...any)
 	// OnError is called for connections that failed before a transfer request
@@ -293,8 +296,12 @@ func (r *Receiver) handle(ctx context.Context, conn transport.Conn) (rec *Receiv
 		return nil, err
 	}
 
-	if ttype == security.TransferText {
+	if ttype == security.TransferText || ttype == security.TransferClipboard {
 		data, err := r.receiveText(conn, incoming, req.SHA256)
+		var items []string
+		if err == nil && ttype == security.TransferClipboard {
+			items, err = DecodeClipboard(data)
+		}
 		if err != nil {
 			_ = protocol.WriteMsg(conn, &protocol.TransferResult{OK: false, Error: publicMessage(err)})
 			return nil, wrapCtx(ctx, err)
@@ -303,7 +310,11 @@ func (r *Receiver) handle(ctx context.Context, conn transport.Conn) (rec *Receiv
 		if err := protocol.WriteMsg(conn, &protocol.TransferResult{OK: true, SHA256: req.SHA256, Trusted: granted}); err != nil {
 			return nil, err
 		}
-		if r.OnText != nil {
+		if ttype == security.TransferClipboard {
+			if r.OnClipboard != nil {
+				r.OnClipboard(incoming, items)
+			}
+		} else if r.OnText != nil {
 			r.OnText(incoming, data)
 		}
 		return &Received{In: incoming, SHA256: req.SHA256, TrustGranted: granted}, nil
@@ -381,6 +392,11 @@ func (r *Receiver) validateRequest(req *protocol.TransferRequest) (security.Tran
 			return "", "", fmt.Errorf("text of %d bytes exceeds the %d byte limit", req.Size, MaxTextSize)
 		}
 		return security.TransferText, "", nil
+	case protocol.ModeClipboard:
+		if req.Size > MaxTextSize {
+			return "", "", fmt.Errorf("clipboard of %d bytes exceeds the %d byte limit", req.Size, MaxTextSize)
+		}
+		return security.TransferClipboard, "", nil
 	}
 	return "", "", fmt.Errorf("unsupported transfer mode %q", req.Mode)
 }

@@ -33,7 +33,7 @@ func newReceiveCmd(verbose *bool) *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:     "receive",
-		Short:   "Wait for incoming files",
+		Short:   "Wait for incoming files, text and clipboards",
 		Example: "  drop receive\n  drop receive --dir ~/inbox --once",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -83,7 +83,7 @@ func (a *app) runReceive(ctx context.Context, dir string, port int, yes, once, n
 	}
 
 	fmt.Fprintf(os.Stderr, "%s is ready to receive on port %d → %s\n", a.identity.Name, p, dir)
-	if _, running := serviceState(); running {
+	if _, running := serviceState(activeSvc); running {
 		fmt.Fprintln(os.Stderr, "Note: the background active-sharing receiver is running too. If a sender reaches it instead of this window, the transfer is declined. Pause it with `drop active service stop`.")
 	}
 	if b := a.activeBanner(); b != "" {
@@ -115,7 +115,11 @@ func (a *app) runReceive(ctx context.Context, dir string, port int, yes, once, n
 		},
 		Approver: transfer.ApproverFunc(func(ctx context.Context, inc transfer.Incoming) transfer.Decision {
 			if d, why := a.activeAccept(ctx, inc); d.Accept {
-				fmt.Fprintf(os.Stderr, "✓ Active sharing: accepting %s from %s → %s\n", activeWhat(inc), a.label(inc.KeyID, inc.From.Name), d.Dir)
+				if inc.Type == security.TransferClipboard {
+					fmt.Fprintf(os.Stderr, "✓ Live clipboard: accepting from %s\n", a.label(inc.KeyID, inc.From.Name))
+				} else {
+					fmt.Fprintf(os.Stderr, "✓ Active sharing: accepting %s from %s → %s\n", activeWhat(inc), a.label(inc.KeyID, inc.From.Name), d.Dir)
+				}
 				return d
 			} else if why != "" {
 				fmt.Fprintf(os.Stderr, "Active sharing is not applied (%s); asking instead.\n", why)
@@ -143,6 +147,7 @@ func (a *app) runReceive(ctx context.Context, dir string, port int, yes, once, n
 			pbMu.Unlock()
 			p.SetFile("Receiving", fmt.Sprintf("[%d/%d]", i, n), sanitizeLabel(path))
 		},
+		OnClipboard: a.onClipboardReceived,
 		OnText: func(inc transfer.Incoming, data []byte) {
 			text := string(data)
 			if isTTY(os.Stdout) {
@@ -173,7 +178,7 @@ func (a *app) runReceive(ctx context.Context, dir string, port int, yes, once, n
 			if rec != nil && rec.TrustGranted {
 				fmt.Fprintf(os.Stderr, "✓ %s is now a trusted device\n", sanitizeLabel(inc.From.Name))
 			}
-			if inc.Type == security.TransferText {
+			if inc.Type == security.TransferText || inc.Type == security.TransferClipboard {
 				return
 			}
 			if inc.Type == security.TransferFolder {
@@ -216,16 +221,25 @@ func approve(in *bufio.Reader, dir string, yes bool, inc transfer.Incoming, from
 	switch inc.Type {
 	case security.TransferFolder:
 		what = fmt.Sprintf("Folder: %s (%s in %s)", inc.Name, plural(inc.Files, "file", "files"), plural(inc.Dirs, "subfolder", "subfolders"))
+	case security.TransferClipboard:
+		what = "Clipboard: text entries (the first one will replace what is on your clipboard)"
 	}
+	isClip := inc.Type == security.TransferClipboard
 	// [d] changes the destination for this transfer only.
 	chosen := dir
 	for {
 		fmt.Fprintf(os.Stderr, "\nIncoming transfer\n\n  From: %s (%s)\n  %s\n", from, inc.Addr, what)
-		fmt.Fprintf(os.Stderr, "  Save to: %s\n", chosen)
+		if !isClip {
+			fmt.Fprintf(os.Stderr, "  Save to: %s\n", chosen)
+		}
 		fmt.Fprintf(os.Stderr, "  Size: %s\n  Authentication: %s\n\n", humanBytes(inc.Size), authLine)
-		fmt.Fprint(os.Stderr, "Accept? [Y/n], or d to choose another folder: ")
+		if isClip {
+			fmt.Fprint(os.Stderr, "Accept? [Y/n] ")
+		} else {
+			fmt.Fprint(os.Stderr, "Accept? [Y/n], or d to choose another folder: ")
+		}
 		ans := strings.ToLower(readLine(in))
-		if ans == "d" || ans == "dir" {
+		if !isClip && (ans == "d" || ans == "dir") {
 			chosen = askDir(in, chosen)
 			continue
 		}
@@ -388,6 +402,9 @@ While accepting a transfer you can still choose another folder with "d".`,
 }
 
 func activeWhat(inc transfer.Incoming) string {
+	if inc.Type == security.TransferClipboard {
+		return "clipboard"
+	}
 	if inc.Type == security.TransferFolder {
 		return "folder " + sanitizeLabel(inc.Name)
 	}

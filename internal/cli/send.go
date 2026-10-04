@@ -34,7 +34,7 @@ type sendOptions struct {
 }
 
 func addSendFlags(cmd *cobra.Command, o *sendOptions) {
-	cmd.Flags().StringVar(&o.to, "to", "", "target device name, ID, or host:port (skips the menu)")
+	cmd.Flags().StringVar(&o.to, "to", "", "target device name, nickname, ID, or host:port (skips the menu)")
 	cmd.Flags().DurationVar(&o.timeout, "timeout", 3*time.Second, "how long to search for devices")
 	cmd.Flags().BoolVar(&o.text, "text", false, "send plain text read from stdin (no PIN by default)")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "folders: show what would be sent and excluded, then stop")
@@ -240,6 +240,8 @@ func (a *app) sendOnce(ctx context.Context, tgt target, ttype security.TransferT
 		res, err = transfer.SendFolder(ctx, conn, a.self(), scan, opts)
 	case ttype == security.TransferText:
 		res, err = transfer.SendText(ctx, conn, a.self(), text, opts)
+	case ttype == security.TransferClipboard:
+		res, err = transfer.SendClipboard(ctx, conn, a.self(), text, opts)
 	default:
 		res, err = transfer.SendFile(ctx, conn, a.self(), path, opts)
 	}
@@ -258,7 +260,7 @@ func (a *app) sendOnce(ctx context.Context, tgt target, ttype security.TransferT
 		fmt.Fprintln(os.Stderr, "✓ Trusted device (no PIN needed)")
 	}
 	switch {
-	case ttype == security.TransferText:
+	case ttype == security.TransferText, ttype == security.TransferClipboard:
 		fmt.Println("✓ Sent")
 	case scan != nil:
 		fmt.Printf("%s, %s transferred\nSHA-256 verified ✓ (every file and the whole tree)\nTransfer complete\n", plural(res.Files, "file", "files"), humanBytes(res.Size))

@@ -66,9 +66,10 @@ type AuthResult struct {
 
 // Transfer modes.
 const (
-	ModeFile   = "file"
-	ModeText   = "text"
-	ModeFolder = "folder"
+	ModeFile      = "file"
+	ModeText      = "text"
+	ModeFolder    = "folder"
+	ModeClipboard = "clipboard"
 )
 
 // TransferRequest describes what the sender wants to send.

@@ -46,7 +46,7 @@ Version negotiation: highest common version. Either side may send `error{message
 - `file`: `name` is a bare file name. Receivers MUST reject `/` or `\`, `.`/`..`, drive prefixes, NUL, invalid UTF-8, and SHOULD replace characters illegal on Windows.
 - `folder`: `name` is the folder's base name (validated like a file name), `size` the total bytes of all files, `files`/`dirs` the counts, `sha256` the SHA-256 of the manifest blob. See "Folders" below.
 - `text`: `size` ≤ 1 MiB; held in memory; never written to disk.
-- Unknown modes (including `clipboard`, `folder`, ... until implemented) MUST be rejected; they are never treated as less protected.
+- Unknown modes MUST be rejected; they are never treated as less protected. `clipboard` carries `{"items":[...]}` (non-empty UTF-8 strings, at most 100, whole payload at most 1 MiB), is hashed and verified like text, and always requires authorization.
 - The dialer MUST treat the transfer as failed unless `transfer_result.ok` and its `sha256` equals its own.
 
 ## Folders

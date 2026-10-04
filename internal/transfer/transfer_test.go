@@ -50,6 +50,7 @@ type harness struct {
 	done  chan result
 	logs  *syncBuf
 	texts chan []byte
+	clips chan []string
 	trust *security.TrustStore
 }
 
@@ -88,7 +89,7 @@ func newHarnessTB(t testing.TB, ap Approver, policy security.Policy) *harness {
 	}
 	t.Cleanup(func() { l.Close() })
 	h := &harness{t: t, l: l, dir: t.TempDir(), rcv: newIdentity(t, "receiver"), snd: newIdentity(t, "sender"),
-		done: make(chan result, 1), logs: &syncBuf{}, texts: make(chan []byte, 1)}
+		done: make(chan result, 1), logs: &syncBuf{}, texts: make(chan []byte, 1), clips: make(chan []string, 1)}
 	cfgDir := t.TempDir()
 	pins := security.OpenPINStore(cfgDir)
 	if err := pins.Set(testPIN); err != nil {
@@ -99,9 +100,10 @@ func newHarnessTB(t testing.TB, ap Approver, policy security.Policy) *harness {
 	h.trust, _ = security.OpenTrustStore(t.TempDir(), security.DefaultTrustExpiry)
 	h.r = &Receiver{
 		Self: Self{ID: h.rcv.ID, Name: "recv", OS: "test"}, Dir: h.dir, Approver: ap, Policy: policy, Logf: logf, Trust: h.trust,
-		Upgrade: func(c transport.Conn) (transport.Conn, error) { return security.Server(c, h.rcv, security.Any()) },
-		Auth:    &security.Authenticator{SelfID: h.rcv.ID, PINs: pins, Limiter: lim, Logf: logf},
-		OnText:  func(_ Incoming, d []byte) { h.texts <- d },
+		Upgrade:     func(c transport.Conn) (transport.Conn, error) { return security.Server(c, h.rcv, security.Any()) },
+		Auth:        &security.Authenticator{SelfID: h.rcv.ID, PINs: pins, Limiter: lim, Logf: logf},
+		OnText:      func(_ Incoming, d []byte) { h.texts <- d },
+		OnClipboard: func(_ Incoming, items []string) { h.clips <- items },
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -442,7 +444,6 @@ func TestInvalidRequests(t *testing.T) {
 		"negative size": {Mode: protocol.ModeFile, Name: "a", Size: -1, SHA256: sum(nil)},
 		"bad hash":      {Mode: protocol.ModeFile, Name: "a", Size: 1, SHA256: "zz"},
 		"bad mode":      {Mode: "dir", Name: "a", Size: 1, SHA256: sum(nil)},
-		"clipboard":     {Mode: "clipboard", Size: 1, SHA256: sum(nil)}, // not implemented: must not be accepted as anything weaker
 	}
 	for name, req := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -568,4 +569,71 @@ func TestApproverCanRedirectOneTransfer(t *testing.T) {
 		t.Fatalf("saved to %s, want %s", r.rec.Path, other)
 	}
 	assertEmpty(t, h.dir)
+}
+
+func sendClip(t *testing.T, h *harness, items []string, pin string) error {
+	t.Helper()
+	payload, err := EncodeClipboard(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := h.opts(pin)
+	o.Policy = h.r.Policy
+	_, err = SendClipboard(context.Background(), h.dial(), h.selfS(), payload, o)
+	return err
+}
+
+func TestClipboardRoundTripNeedsPIN(t *testing.T) {
+	items := []string{"newest\nwith two lines", "ünï©ode ✓", "older"}
+	h := newHarness(t, acceptAll(ConflictRename), security.Policy{})
+	if err := sendClip(t, h, items, ""); !errors.Is(err, ErrPINRequired) {
+		t.Fatalf("clipboard without a PIN must be refused client-side, got %v", err)
+	}
+	h = newHarness(t, acceptAll(ConflictRename), security.Policy{})
+	if err := sendClip(t, h, items, testPIN); err != nil {
+		t.Fatal(err)
+	}
+	got := <-h.clips
+	if len(got) != 3 || got[0] != items[0] || got[1] != items[1] || got[2] != items[2] {
+		t.Fatalf("%q", got)
+	}
+	if r := h.wait(); r.err != nil || !r.rec.In.Authorized || r.rec.In.Type != security.TransferClipboard {
+		t.Fatalf("%v %+v", r.err, r.rec)
+	}
+	assertEmpty(t, h.dir) // clipboard never touches disk
+}
+
+func TestClipboardFromUnauthorizedPeerIsRefused(t *testing.T) {
+	h := newHarness(t, acceptAll(ConflictRename), security.Policy{})
+	payload, _ := EncodeClipboard([]string{"x"})
+	conn := h.dial() // no PIN authentication
+	rawHello(t, conn, h.snd)
+	protocol.WriteMsg(conn, &protocol.TransferRequest{Mode: protocol.ModeClipboard, Size: int64(len(payload)), SHA256: sum(payload)})
+	if r := h.wait(); r.err == nil {
+		t.Fatal("unauthenticated clipboard accepted")
+	}
+	select {
+	case <-h.clips:
+		t.Fatal("clipboard delivered without authorization")
+	default:
+	}
+}
+
+func TestClipboardPayloadValidation(t *testing.T) {
+	if _, err := EncodeClipboard(nil); err == nil {
+		t.Fatal("empty selection accepted")
+	}
+	if _, err := EncodeClipboard(make([]string, MaxClipboardItems+1)); err == nil {
+		t.Fatal("too many entries accepted")
+	}
+	if _, err := EncodeClipboard([]string{strings.Repeat("x", MaxTextSize)}); err == nil {
+		t.Fatal("oversize payload accepted")
+	}
+	for name, bad := range map[string]string{
+		"not json": "hello", "no items": `{"items":[]}`, "empty entry": `{"items":[""]}`, "unknown field": `{"items":["a"],"x":1}`,
+	} {
+		if _, err := DecodeClipboard([]byte(bad)); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
 }

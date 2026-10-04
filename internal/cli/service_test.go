@@ -10,19 +10,19 @@ import (
 )
 
 func TestLaunchdPlistEscapesAndRunsServe(t *testing.T) {
-	p := launchdPlist("/Users/a&b/bin/drop", "/Users/a&b/l<og>", "/tmp/h")
+	p := launchdPlist(activeSvc, "/Users/a&b/bin/drop", "/Users/a&b/l<og>", "/tmp/h")
 	for _, want := range []string{"<string>/Users/a&amp;b/bin/drop</string>", "<string>serve</string>", "/Users/a&amp;b/l&lt;og&gt;", "DROP_HOME", "<key>RunAtLoad</key><true/>", "<key>KeepAlive</key><true/>"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("plist missing %q:\n%s", want, p)
 		}
 	}
-	if strings.Contains(launchdPlist("/x/drop", "/l", ""), "DROP_HOME") {
+	if strings.Contains(launchdPlist(activeSvc, "/x/drop", "/l", ""), "DROP_HOME") {
 		t.Error("DROP_HOME written when unset")
 	}
 }
 
 func TestSystemdUnitQuotesPaths(t *testing.T) {
-	u := systemdUnit(`/home/my user/drop`, `/home/my user/service.log`, "")
+	u := systemdUnit(activeSvc, `/home/my user/drop`, `/home/my user/service.log`, "")
 	if !strings.Contains(u, `ExecStart="/home/my user/drop" active serve --log "/home/my user/service.log"`) {
 		t.Errorf("unit:\n%s", u)
 	}
@@ -32,7 +32,7 @@ func TestSystemdUnitQuotesPaths(t *testing.T) {
 }
 
 func TestWindowsTaskCommandQuotesApostrophes(t *testing.T) {
-	c := windowsTaskCommand(`C:\Users\O'Neil\drop.exe`, `C:\Users\O'Neil\s.log`)
+	c := windowsTaskCommand(activeSvc, `C:\Users\O'Neil\drop.exe`, `C:\Users\O'Neil\s.log`)
 	if !strings.Contains(c, `& 'C:\Users\O''Neil\drop.exe' active serve --log 'C:\Users\O''Neil\s.log'`) || !strings.Contains(c, "-WindowStyle Hidden") {
 		t.Errorf("command: %s", c)
 	}

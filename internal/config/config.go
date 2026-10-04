@@ -18,9 +18,17 @@ const dirName = "drop"
 // Config is the user-editable configuration. Every field has a working default,
 // so no config file is required.
 type Config struct {
-	Device   DeviceConfig   `toml:"device"`
-	Transfer TransferConfig `toml:"transfer"`
-	Security SecurityConfig `toml:"security"`
+	Device    DeviceConfig    `toml:"device"`
+	Transfer  TransferConfig  `toml:"transfer"`
+	Security  SecurityConfig  `toml:"security"`
+	Clipboard ClipboardConfig `toml:"clipboard"`
+}
+
+// ClipboardConfig controls the optional clipboard history.
+type ClipboardConfig struct {
+	// History records what you copy (text only, in a private local file) so
+	// `drop clipboard` can offer earlier copies. Off by default.
+	History bool `toml:"history"`
 }
 
 type DeviceConfig struct {

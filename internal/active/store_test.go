@@ -84,3 +84,33 @@ func TestNicknames(t *testing.T) {
 		t.Fatal("display")
 	}
 }
+
+func TestCheckClipboardIsIndependentOfFileSettings(t *testing.T) {
+	st := Settings{Clipboard: true, Devices: []string{"dev1"}, Networks: []Network{{Name: "Home", GatewayMAC: "aa:bb:cc:dd:ee:ff"}}}
+	if !st.CheckClipboard("dev1", true, "AA:BB:CC:DD:EE:FF", true).OK {
+		t.Fatal("live clipboard needs no folder and no file-sharing switch")
+	}
+	if st.Check("dev1", true, "aa:bb:cc:dd:ee:ff", true).OK {
+		t.Fatal("clipboard switch must not enable file auto-accept")
+	}
+	cases := map[string]bool{
+		"untrusted":     st.CheckClipboard("dev1", false, "aa:bb:cc:dd:ee:ff", true).OK,
+		"not allowed":   st.CheckClipboard("dev2", true, "aa:bb:cc:dd:ee:ff", true).OK,
+		"other network": st.CheckClipboard("dev1", true, "11:22:33:44:55:66", true).OK,
+		"off link":      st.CheckClipboard("dev1", true, "aa:bb:cc:dd:ee:ff", false).OK,
+	}
+	for name, got := range cases {
+		if got {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	off := st
+	off.Clipboard = false
+	if off.CheckClipboard("dev1", true, "aa:bb:cc:dd:ee:ff", true).OK {
+		t.Fatal("accepted while switched off")
+	}
+	files := Settings{Enabled: true, Dir: "/x", Devices: st.Devices, Networks: st.Networks}
+	if files.CheckClipboard("dev1", true, "aa:bb:cc:dd:ee:ff", true).OK {
+		t.Fatal("file sharing alone must not enable clipboard")
+	}
+}

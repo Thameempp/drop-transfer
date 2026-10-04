@@ -164,7 +164,47 @@ func withActive(verbose bool, fn func(*app, *active.Settings) error) error {
 	if err != nil {
 		return err
 	}
-	return a.active.Update(func(st *active.Settings) error { return fn(a, st) })
+	if err := a.active.Update(func(st *active.Settings) error { return fn(a, st) }); err != nil {
+		return err
+	}
+	a.syncService()
+	return nil
+}
+
+// syncService keeps the background receiver in step with the settings and
+// prints what it did. See syncServiceMsg.
+func (a *app) syncService() {
+	if msg := a.syncServiceMsg(); msg != "" {
+		fmt.Println(msg)
+	}
+}
+
+// syncServiceMsg makes the background receiver run while file active sharing or
+// live clipboard is on, and removes it when both are off. It returns a short
+// note about what changed ("" if nothing). A failure only means the user must
+// use `drop receive` or retry. DROP_NO_SERVICE=1 disables it (used by tests so
+// they never touch the system).
+func (a *app) syncServiceMsg() string {
+	if os.Getenv("DROP_NO_SERVICE") != "" {
+		return ""
+	}
+	st, err := a.active.Load()
+	if err != nil {
+		return ""
+	}
+	installed, _ := serviceState(activeSvc)
+	switch want := st.Enabled || st.Clipboard; {
+	case want && !installed:
+		if err := installBackgroundService(a); err != nil {
+			return fmt.Sprintf("Note: could not start the background receiver (%v); keep `drop receive` running or retry `drop active service install`.", err)
+		}
+		return "✓ Background receiver installed: it starts at every login."
+	case !want && installed:
+		if err := uninstallService(activeSvc); err == nil {
+			return "✓ Background receiver removed (nothing needs it now)."
+		}
+	}
+	return ""
 }
 
 func (a *app) matchTrusted(q string) (devRef, error) {
@@ -468,11 +508,20 @@ func (a *app) showActive(ctx context.Context) error {
 // device owner), empty when it is simply not in use.
 func (a *app) activeAccept(ctx context.Context, inc transfer.Incoming) (transfer.Decision, string) {
 	st, err := a.active.Load()
-	if err != nil || !st.Enabled {
+	if err != nil || inc.AuthMethod != "trusted" || !st.HasDevice(inc.KeyID) {
 		return transfer.Decision{}, ""
 	}
-	if inc.Type == security.TransferText || inc.AuthMethod != "trusted" || !st.HasDevice(inc.KeyID) {
-		return transfer.Decision{}, ""
+	switch inc.Type {
+	case security.TransferFile, security.TransferFolder:
+		if !st.Enabled {
+			return transfer.Decision{}, ""
+		}
+	case security.TransferClipboard:
+		if !st.Clipboard {
+			return transfer.Decision{}, ""
+		}
+	default:
+		return transfer.Decision{}, "" // text and everything else is never auto-accepted here
 	}
 	mac := ""
 	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -481,7 +530,15 @@ func (a *app) activeAccept(ctx context.Context, inc transfer.Incoming) (transfer
 		mac = m
 	}
 	host, _, _ := net.SplitHostPort(inc.Addr)
-	d := st.Check(inc.KeyID, inc.AuthMethod == "trusted", mac, discovery.OnLink(net.ParseIP(host)))
+	onLink := discovery.OnLink(net.ParseIP(host))
+	if inc.Type == security.TransferClipboard {
+		d := st.CheckClipboard(inc.KeyID, true, mac, onLink)
+		if !d.OK {
+			return transfer.Decision{}, d.Reason
+		}
+		return transfer.Decision{Accept: true}, ""
+	}
+	d := st.Check(inc.KeyID, true, mac, onLink)
 	if !d.OK {
 		return transfer.Decision{}, d.Reason
 	}

@@ -24,12 +24,23 @@ import (
 	"github.com/thameem/drop/internal/transport"
 )
 
-const (
-	serviceLabel   = "com.thameem.drop.active" // macOS LaunchAgent
-	serviceUnit    = "drop-active.service"     // Linux systemd user unit
-	serviceTask    = "Drop Active Sharing"     // Windows scheduled task
-	maxServiceLog  = 1 << 20
-	serviceLogName = "service.log"
+const maxServiceLog = 1 << 20
+
+// svcSpec describes one per-user background service drop can install.
+type svcSpec struct {
+	label   string // macOS LaunchAgent label
+	unit    string // Linux systemd user unit
+	task    string // Windows scheduled task
+	logName string // file in the config dir
+	desc    string
+	args    []string // drop subcommand it runs
+}
+
+var (
+	activeSvc = svcSpec{"com.thameem.drop.active", "drop-active.service", "Drop Active Sharing", "service.log",
+		"Drop active sharing receiver", []string{"active", "serve"}}
+	clipSvc = svcSpec{"com.thameem.drop.clipboard", "drop-clipboard.service", "Drop Clipboard History", "clipboard.log",
+		"Drop clipboard history recorder", []string{"clipboard", "watch"}}
 )
 
 func newActiveServeCmd(verbose *bool) *cobra.Command {
@@ -75,7 +86,8 @@ func (a *app) runActiveService(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if m := activeMissing(st); m != "" {
+	clipReady := st.Clipboard && len(st.Devices) > 0 && len(st.Networks) > 0
+	if m := activeMissing(st); m != "" && !clipReady {
 		return usageErr("active sharing is not set up yet: %s", m)
 	}
 	l, err := a.tr.Listen(":0")
@@ -112,12 +124,17 @@ func (a *app) runActiveService(ctx context.Context) error {
 		Approver: transfer.ApproverFunc(func(ctx context.Context, inc transfer.Incoming) transfer.Decision {
 			from := a.label(inc.KeyID, inc.From.Name)
 			if d, _ := a.activeAccept(ctx, inc); d.Accept {
-				fmt.Fprintf(os.Stderr, "✓ accepting %s from %s → %s\n", activeWhat(inc), from, d.Dir)
+				if inc.Type == security.TransferClipboard {
+					fmt.Fprintf(os.Stderr, "✓ accepting clipboard from %s\n", from)
+				} else {
+					fmt.Fprintf(os.Stderr, "✓ accepting %s from %s → %s\n", activeWhat(inc), from, d.Dir)
+				}
 				return d
 			}
 			fmt.Fprintf(os.Stderr, "✗ declined %s from %s (not allowed by active sharing)\n", activeWhat(inc), from)
-			return transfer.Decision{Reason: "this device only receives from allowed devices on its saved network while nobody is at it; ask its owner to run `drop receive`"}
+			return transfer.Decision{Reason: "this device only takes files and clipboard from devices it was set up to allow, on its saved network, while nobody is at it; ask its owner to run `drop receive`"}
 		}),
+		OnClipboard: a.onClipboardInBackground,
 		OnResult: func(rec *transfer.Received, inc *transfer.Incoming, err error) {
 			if err != nil {
 				if inc != nil {
@@ -125,7 +142,7 @@ func (a *app) runActiveService(ctx context.Context) error {
 				}
 				return
 			}
-			if rec != nil && inc != nil && inc.Type != security.TransferText {
+			if rec != nil && inc != nil && inc.Type != security.TransferText && inc.Type != security.TransferClipboard {
 				fmt.Fprintf(os.Stderr, "✓ %s (%s) from %s verified, saved to %s\n", inc.Name, humanBytes(inc.Size), sanitizeLabel(inc.From.Name), rec.Path)
 			}
 		},
@@ -170,13 +187,13 @@ cannot receive.`,
 				if err := installBackgroundService(a); err != nil {
 					return withCode(ExitGeneral, err)
 				}
-				fmt.Printf("✓ Background receiver installed and started. It now runs at every login.\n  Log: %s\n", filepath.Join(a.cfgDir, serviceLogName))
+				fmt.Printf("✓ Background receiver installed and started. It now runs at every login.\n  Log: %s\n", filepath.Join(a.cfgDir, activeSvc.logName))
 				fmt.Println("  If you move or reinstall `drop`, run this command again.")
 				return nil
 			}},
 		&cobra.Command{Use: "uninstall", Short: "Stop it and remove it from login", Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				if err := uninstallService(); err != nil {
+				if err := uninstallService(activeSvc); err != nil {
 					return withCode(ExitGeneral, err)
 				}
 				fmt.Println("✓ Background receiver removed.")
@@ -188,7 +205,7 @@ cannot receive.`,
 			RunE: func(cmd *cobra.Command, args []string) error { return serviceControl("stop") }},
 		&cobra.Command{Use: "status", Short: "Show whether it is installed and running", Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				installed, running := serviceState()
+				installed, running := serviceState(activeSvc)
 				switch {
 				case !installed:
 					fmt.Println("Background receiver: not installed (drop active service install)")
@@ -205,6 +222,9 @@ cannot receive.`,
 
 // installBackgroundService registers `drop active serve` to start at login.
 func installBackgroundService(a *app) error {
+	if os.Getenv("DROP_NO_SERVICE") != "" {
+		return nil
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -212,14 +232,14 @@ func installBackgroundService(a *app) error {
 	if r, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = r
 	}
-	return installService(exe, filepath.Join(a.cfgDir, serviceLogName))
+	return installService(activeSvc, exe, filepath.Join(a.cfgDir, activeSvc.logName))
 }
 
 func serviceControl(what string) error {
-	if installed, _ := serviceState(); !installed {
+	if installed, _ := serviceState(activeSvc); !installed {
 		return usageErr("the background receiver is not installed (drop active service install)")
 	}
-	if err := controlService(what); err != nil {
+	if err := controlService(activeSvc, what); err != nil {
 		return withCode(ExitGeneral, err)
 	}
 	fmt.Printf("✓ Background receiver %s.\n", map[string]string{"start": "started", "stop": "stopped"}[what])
@@ -236,94 +256,91 @@ func run(name string, args ...string) (string, error) {
 
 func homeDir() string { h, _ := os.UserHomeDir(); return h }
 
-func launchAgentPath() string {
-	return filepath.Join(homeDir(), "Library", "LaunchAgents", serviceLabel+".plist")
+func launchAgentPath(sp svcSpec) string {
+	return filepath.Join(homeDir(), "Library", "LaunchAgents", sp.label+".plist")
 }
-func systemdUnitPath() string {
-	return filepath.Join(homeDir(), ".config", "systemd", "user", serviceUnit)
+func systemdUnitPath(sp svcSpec) string {
+	return filepath.Join(homeDir(), ".config", "systemd", "user", sp.unit)
 }
 
 func domain() string { return "gui/" + strconv.Itoa(os.Getuid()) }
 
-func installService(exe, logPath string) error {
-	env := ""
-	if h := os.Getenv("DROP_HOME"); h != "" {
-		env = h
-	}
+func installService(sp svcSpec, exe, logPath string) error {
+	env := os.Getenv("DROP_HOME")
 	switch runtime.GOOS {
 	case "darwin":
-		path := launchAgentPath()
+		path := launchAgentPath(sp)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(path, []byte(launchdPlist(exe, logPath, env)), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(launchdPlist(sp, exe, logPath, env)), 0o644); err != nil {
 			return err
 		}
-		run("launchctl", "bootout", domain()+"/"+serviceLabel) // replace an older copy; fine if absent
+		run("launchctl", "bootout", domain()+"/"+sp.label) // replace an older copy; fine if absent
 		_, err := run("launchctl", "bootstrap", domain(), path)
 		return err
 	case "linux":
-		path := systemdUnitPath()
+		path := systemdUnitPath(sp)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(path, []byte(systemdUnit(exe, logPath, env)), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(systemdUnit(sp, exe, logPath, env)), 0o644); err != nil {
 			return err
 		}
 		if _, err := run("systemctl", "--user", "daemon-reload"); err != nil {
 			return err
 		}
-		_, err := run("systemctl", "--user", "enable", "--now", serviceUnit)
+		_, err := run("systemctl", "--user", "enable", "--now", sp.unit)
 		return err
 	case "windows":
-		if _, err := run("schtasks", "/Create", "/F", "/TN", serviceTask, "/SC", "ONLOGON", "/RL", "LIMITED", "/TR", windowsTaskCommand(exe, logPath)); err != nil {
+		if _, err := run("schtasks", "/Create", "/F", "/TN", sp.task, "/SC", "ONLOGON", "/RL", "LIMITED", "/TR", windowsTaskCommand(sp, exe, logPath)); err != nil {
 			return err
 		}
-		_, err := run("schtasks", "/Run", "/TN", serviceTask)
+		_, err := run("schtasks", "/Run", "/TN", sp.task)
 		return err
 	}
-	return fmt.Errorf("the background receiver is not supported on %s", runtime.GOOS)
+	return fmt.Errorf("background services are not supported on %s", runtime.GOOS)
 }
 
-func uninstallService() error {
+func uninstallService(sp svcSpec) error {
 	switch runtime.GOOS {
 	case "darwin":
-		run("launchctl", "bootout", domain()+"/"+serviceLabel)
-		if err := os.Remove(launchAgentPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		run("launchctl", "bootout", domain()+"/"+sp.label)
+		if err := os.Remove(launchAgentPath(sp)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return nil
 	case "linux":
-		run("systemctl", "--user", "disable", "--now", serviceUnit)
-		if err := os.Remove(systemdUnitPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		run("systemctl", "--user", "disable", "--now", sp.unit)
+		if err := os.Remove(systemdUnitPath(sp)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		run("systemctl", "--user", "daemon-reload")
 		return nil
 	case "windows":
-		run("schtasks", "/End", "/TN", serviceTask)
-		_, err := run("schtasks", "/Delete", "/F", "/TN", serviceTask)
+		run("schtasks", "/End", "/TN", sp.task)
+		_, err := run("schtasks", "/Delete", "/F", "/TN", sp.task)
 		return err
 	}
-	return fmt.Errorf("the background receiver is not supported on %s", runtime.GOOS)
+	return fmt.Errorf("background services are not supported on %s", runtime.GOOS)
 }
 
-func controlService(what string) error {
+func controlService(sp svcSpec, what string) error {
 	var err error
 	switch runtime.GOOS {
 	case "darwin":
 		if what == "stop" {
-			_, err = run("launchctl", "bootout", domain()+"/"+serviceLabel)
+			_, err = run("launchctl", "bootout", domain()+"/"+sp.label)
 		} else {
-			_, err = run("launchctl", "bootstrap", domain(), launchAgentPath())
+			_, err = run("launchctl", "bootstrap", domain(), launchAgentPath(sp))
 		}
 	case "linux":
-		_, err = run("systemctl", "--user", what, serviceUnit)
+		_, err = run("systemctl", "--user", what, sp.unit)
 	case "windows":
 		if what == "stop" {
-			_, err = run("schtasks", "/End", "/TN", serviceTask)
+			_, err = run("schtasks", "/End", "/TN", sp.task)
 		} else {
-			_, err = run("schtasks", "/Run", "/TN", serviceTask)
+			_, err = run("schtasks", "/Run", "/TN", sp.task)
 		}
 	default:
 		err = fmt.Errorf("not supported on %s", runtime.GOOS)
@@ -331,23 +348,23 @@ func controlService(what string) error {
 	return err
 }
 
-// serviceState reports whether the background receiver is installed and running.
-func serviceState() (installed, running bool) {
+// serviceState reports whether a background service is installed and running.
+func serviceState(sp svcSpec) (installed, running bool) {
 	switch runtime.GOOS {
 	case "darwin":
-		if _, err := os.Stat(launchAgentPath()); err != nil {
+		if _, err := os.Stat(launchAgentPath(sp)); err != nil {
 			return false, false
 		}
-		_, err := run("launchctl", "print", domain()+"/"+serviceLabel)
+		_, err := run("launchctl", "print", domain()+"/"+sp.label)
 		return true, err == nil
 	case "linux":
-		if _, err := os.Stat(systemdUnitPath()); err != nil {
+		if _, err := os.Stat(systemdUnitPath(sp)); err != nil {
 			return false, false
 		}
-		out, _ := run("systemctl", "--user", "is-active", serviceUnit)
+		out, _ := run("systemctl", "--user", "is-active", sp.unit)
 		return true, strings.TrimSpace(out) == "active"
 	case "windows":
-		out, err := run("schtasks", "/Query", "/TN", serviceTask, "/FO", "LIST")
+		out, err := run("schtasks", "/Query", "/TN", sp.task, "/FO", "LIST")
 		return err == nil, err == nil && strings.Contains(out, "Running")
 	}
 	return false, false
@@ -359,24 +376,23 @@ func xmlEscape(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;").Replace(s)
 }
 
-func launchdPlist(exe, logPath, dropHome string) string {
+func launchdPlist(sp svcSpec, exe, logPath, dropHome string) string {
 	envBlock := ""
 	if dropHome != "" {
 		envBlock = "\n\t<key>EnvironmentVariables</key>\n\t<dict><key>DROP_HOME</key><string>" + xmlEscape(dropHome) + "</string></dict>"
+	}
+	var args strings.Builder
+	for _, a := range append(append([]string{exe}, sp.args...), "--log", logPath) {
+		args.WriteString("\t\t<string>" + xmlEscape(a) + "</string>\n")
 	}
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>Label</key><string>` + serviceLabel + `</string>
+	<key>Label</key><string>` + sp.label + `</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>` + xmlEscape(exe) + `</string>
-		<string>active</string>
-		<string>serve</string>
-		<string>--log</string>
-		<string>` + xmlEscape(logPath) + `</string>
-	</array>
+` + args.String() + `	</array>
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key><true/>
 	<key>ProcessType</key><string>Background</string>` + envBlock + `
@@ -389,17 +405,17 @@ func systemdQuote(s string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`).Replace(s) + `"`
 }
 
-func systemdUnit(exe, logPath, dropHome string) string {
+func systemdUnit(sp svcSpec, exe, logPath, dropHome string) string {
 	env := ""
 	if dropHome != "" {
 		env = "Environment=" + systemdQuote("DROP_HOME="+dropHome) + "\n"
 	}
-	return "[Unit]\nDescription=Drop active sharing receiver\nAfter=network-online.target\n\n[Service]\nExecStart=" +
-		systemdQuote(exe) + " active serve --log " + systemdQuote(logPath) + "\n" + env +
+	return "[Unit]\nDescription=" + sp.desc + "\nAfter=network-online.target\n\n[Service]\nExecStart=" +
+		systemdQuote(exe) + " " + strings.Join(sp.args, " ") + " --log " + systemdQuote(logPath) + "\n" + env +
 		"Restart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n"
 }
 
-func windowsTaskCommand(exe, logPath string) string {
+func windowsTaskCommand(sp svcSpec, exe, logPath string) string {
 	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
-	return `powershell.exe -NoProfile -WindowStyle Hidden -Command "& ` + q(exe) + ` active serve --log ` + q(logPath) + `"`
+	return `powershell.exe -NoProfile -WindowStyle Hidden -Command "& ` + q(exe) + ` ` + strings.Join(sp.args, " ") + ` --log ` + q(logPath) + `"`
 }

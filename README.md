@@ -10,6 +10,42 @@ drop main.py
 
 > **Status: early.** File, folder and plain-text transfer work over TLS 1.3, authorized by a Drop PIN. Project awareness (detection, `.gitignore`, smart exclusions, secret detection) and Git integration (`drop diff`, `drop git`) work. The security model is documented — and not independently audited — in [docs/security.md](docs/security.md).
 
+## Setup menu
+
+```bash
+drop setup
+```
+One arrow-key menu (↑ ↓ move, Enter select or toggle, Space toggle, Esc back) to set up and change everything, with a hint at the bottom saying what to do next:
+
+- **Active sharing** and **Active clipboard**: turn each on or off (if something is still missing, it takes you to the screen that fixes it).
+- **Trusted devices**: add one (it waits for another device to send you something with your PIN, then asks you to trust it) or remove one.
+- **Allowed devices**: choose which trusted devices may send automatically.
+- **Saved networks**: save the network you are on, or forget one. Active features only work on saved networks.
+- **Folders** (active sharing folder, default receive folder) and your **Drop PIN** (show it, or generate a new one).
+
+Everything saves as you go, and every step is also a command (`drop active ...`, `drop clipboard live ...`, `drop security ...`).
+
+## Clipboard
+
+```bash
+drop clipboard                # list what you copied, pick, send
+drop clipboard history on     # (optional) also remember earlier copies
+```
+`drop clipboard` shows your current clipboard and, if history is on, earlier copies. **↑ ↓** move, **Space** selects, **a** selects all, **Enter** sends the selected entries (or the highlighted one if none are selected), **Esc** cancels. Then pick a device as usual (or `--to Mom`). With `drop receive` the receiver is asked before its clipboard is replaced, then sees every entry and can paste them (all entries, one per line). Text only, up to 1 MiB and 100 entries per send. Clipboard transfers **always** need the receiver's PIN (or a trusted device) and are never auto-accepted by active sharing.
+
+Your system gives programs no clipboard history, so earlier copies exist only if you turn history on. **Be aware that it remembers everything you copy as text, passwords included**, in a private local file (50 entries, 64 KiB each), sent nowhere unless you pick an entry. `drop clipboard history off` stops it, `drop clipboard history clear` erases the list. Entries that look like a credential are marked ⚠ and you are asked before sending them. On Linux you need `wl-clipboard`, `xclip` or `xsel`.
+
+### Receiving without a terminal: live clipboard
+
+```bash
+# on the RECEIVING computer (needs a trusted device and a saved network, see "Active sharing" below):
+drop clipboard live on --device "Work PC" --network Home
+drop clipboard live status         # on / off / waiting;   drop clipboard live off  turns it off
+```
+With live clipboard on, a copy sent from an allowed device lands on this computer's clipboard by itself, you get a notification ("Ready: paste with Cmd+V"), and you simply **paste** (Cmd+V on macOS, Ctrl+V on Windows and Linux). Nobody opens a terminal or runs `drop receive` here: it uses the same small background receiver as active sharing, which is installed and removed automatically as you switch features on and off. On the **sending** side the whole flow is: copy, run `drop clipboard`, choose the device. If you copied just one thing and history is off there is nothing to pick, so it goes straight to the device menu.
+
+When several entries are sent, the receiver's clipboard gets **all of them, one per line**, so a normal paste gives everything. It replaces the receiver's clipboard, so allow only devices you trust. It applies only when the sender is a trusted device you allowed, you are on a saved network and the sender is on it too; otherwise the receiver is asked as before. Notifications never contain the copied text. First-time pairing still needs one normal `drop receive` where you answer yes to trusting the sender. On Linux the background receiver needs your desktop's clipboard (`DISPLAY`/`WAYLAND_DISPLAY`) to be visible to your user services, which most desktops arrange.
+
 ## Active sharing and device nicknames
 
 **Active sharing** lets devices you chose send you files without you pressing Accept each time. It saves into one dedicated folder and works only when *all* of these hold: `drop receive` is running, the sender is a **trusted** device you explicitly allowed, you are on a **saved network**, the sender is on that same local network, and active sharing is on. Anything else asks as usual. Active sharing switches itself on whenever you connect to a saved network and is paused (every transfer asks) on any other; `drop active off` pauses it everywhere. You can save several networks (home, office…).
@@ -47,7 +83,17 @@ Nicknames show in `drop devices`, the send menu, `drop security trusted` and rec
 
 ## Install
 
-Requires [Go](https://go.dev/dl/) (version in `go.mod`). Git is only needed for `drop diff` / `drop git`.
+**macOS (Homebrew)**
+```bash
+brew install Thameempp/tap/drop
+```
+**Windows (WinGet)**
+```powershell
+winget install Thameempp.Drop
+```
+Then run `drop setup`. Update with `brew upgrade drop` / `winget upgrade Thameempp.Drop`. Install on **every** device that should send or receive. (Maintainers: see [docs/releasing.md](docs/releasing.md).)
+
+**From source** (any platform). Requires [Go](https://go.dev/dl/) (version in `go.mod`). Git is only needed for `drop diff` / `drop git`.
 
 ```bash
 git clone <this repository> && cd drop

@@ -1,0 +1,90 @@
+# Release pipeline: `git tag vX.Y.Z && git push origin vX.Y.Z` runs this in GitHub
+# Actions (.github/workflows/release.yml). See docs/releasing.md for the one-time setup.
+version: 2
+project_name: drop
+
+builds:
+  - id: drop
+    main: ./cmd/drop
+    binary: drop
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/thameem/drop/internal/cli.Version={{ .Version }}
+
+archives:
+  - id: drop
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "drop_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: Thameempp
+    name: drop-transfer
+
+# macOS (and Linux): brew install Thameempp/tap/drop
+brews:
+  - name: drop
+    repository:
+      owner: Thameempp
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/Thameempp/drop-transfer
+    description: "Send files, folders, text and your clipboard to nearby devices, no accounts or cloud"
+    license: MIT
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/drop --version")
+    caveats: |
+      Get started with the guided menu:
+        drop setup
+      or on the receiving device run `drop receive`, then on the other `drop <file>`.
+
+# Windows: winget install Thameempp.Drop
+winget:
+  - name: Drop
+    publisher: Thameempp
+    package_identifier: Thameempp.Drop
+    publisher_url: https://github.com/Thameempp
+    publisher_support_url: https://github.com/Thameempp/drop-transfer/issues
+    short_description: Send files, folders, text and your clipboard to nearby devices.
+    description: |
+      drop sends files, folders, text, Git changes and your clipboard to nearby devices on
+      your local network. No accounts, no cloud, no IP addresses. Transfers are encrypted
+      (TLS 1.3) and authorized by a Drop PIN or a trusted device. Run `drop setup` to begin.
+    license: MIT
+    license_url: https://github.com/Thameempp/drop-transfer/blob/main/LICENSE
+    homepage: https://github.com/Thameempp/drop-transfer
+    release_notes_url: "https://github.com/Thameempp/drop-transfer/releases/tag/{{ .Tag }}"
+    tags: [cli, file-transfer, local-network, clipboard]
+    repository:
+      owner: Thameempp
+      name: winget-pkgs
+      branch: "drop-{{ .Version }}"
+      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master

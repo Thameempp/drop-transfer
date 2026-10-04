@@ -104,6 +104,19 @@ func ScanContent(abs string, size int64) (kind string, found bool) {
 	if err != nil {
 		return "", false
 	}
+	return scanBytes(data)
+}
+
+// ScanText looks for well-known credential formats in text (such as a
+// clipboard entry). It returns the kind found, never the secret itself.
+func ScanText(text string) (kind string, found bool) {
+	if len(text) > maxScanBytes {
+		return "", false
+	}
+	return scanBytes([]byte(text))
+}
+
+func scanBytes(data []byte) (kind string, found bool) {
 	head := data
 	if len(head) > sniffBytes {
 		head = head[:sniffBytes]
