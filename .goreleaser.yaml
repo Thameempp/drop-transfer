@@ -43,13 +43,18 @@ release:
     owner: Thameempp
     name: drop-transfer
 
-# macOS (and Linux): brew install Thameempp/tap/drop
+# macOS (and Linux). The formula is committed to Formula/drop.rb in this same repository,
+# so the repository itself is the tap:
+#   brew tap Thameempp/drop-transfer https://github.com/Thameempp/drop-transfer
+#   brew install Thameempp/drop-transfer/drop
 brews:
   - name: drop
+    directory: Formula
     repository:
       owner: Thameempp
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      name: drop-transfer
+      branch: main
+      token: "{{ .Env.GITHUB_TOKEN }}"
     homepage: https://github.com/Thameempp/drop-transfer
     description: "Send files, folders, text and your clipboard to nearby devices, no accounts or cloud"
     license: MIT

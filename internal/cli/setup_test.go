@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -142,7 +143,7 @@ func TestSetupSavesNetworksAndTurnsFeaturesOnAndOff(t *testing.T) {
 	}
 	goTo(t, m, "activedir")
 	pressSetup(m, "enter")
-	dir := t.TempDir() + "/Shared"
+	dir := filepath.Join(t.TempDir(), "Shared")
 	typeText(m, dir)
 	pressSetup(m, "enter")
 	if m.settings().Dir != dir {

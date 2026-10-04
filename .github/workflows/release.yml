@@ -20,6 +20,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Personal access tokens (see docs/releasing.md): the default token cannot push to other repositories.
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          # The Homebrew formula is committed to this repository with GITHUB_TOKEN (contents: write above).
+          # WinGet needs a personal access token: the default token cannot push to your winget-pkgs fork
+          # or open a pull request on microsoft/winget-pkgs (see docs/releasing.md).
           WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}

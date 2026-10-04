@@ -85,7 +85,8 @@ Nicknames show in `drop devices`, the send menu, `drop security trusted` and rec
 
 **macOS (Homebrew)**
 ```bash
-brew install Thameempp/tap/drop
+brew tap Thameempp/drop-transfer https://github.com/Thameempp/drop-transfer
+brew install Thameempp/drop-transfer/drop
 ```
 **Windows (WinGet)**
 ```powershell

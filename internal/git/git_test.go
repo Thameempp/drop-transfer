@@ -227,7 +227,8 @@ func TestChangesRefusesConflicts(t *testing.T) {
 	sh(t, root, "checkout", "-q", "main")
 	write(t, root, "f.txt", "main\n", 0o644)
 	sh(t, root, "commit", "-qam", "main")
-	exec.Command("git", "-C", root, "merge", "other").Run() // conflicts
+	// Conflicts, so the merge is expected to fail. It still needs an identity on machines without a global one (CI).
+	exec.Command("git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "-C", root, "merge", "other").Run()
 	repo, _ := openRepo(t, root)
 	if _, err := repo.Changes(ctx, false); err != ErrConflicts {
 		t.Fatalf("got %v", err)
@@ -312,6 +313,9 @@ func TestStagedOnlyPatchContainsOnlyIndexChanges(t *testing.T) {
 
 func TestPatchHonoursPathSelectionAndNeverGlobs(t *testing.T) {
 	need(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("a file literally named *.txt cannot exist on Windows")
+	}
 	root := newRepo(t)
 	write(t, root, "a.txt", "a1\n", 0o644)
 	write(t, root, "secret.env", "S=1\n", 0o644)
